@@ -1,0 +1,857 @@
+<?php
+/**
+ * CmdCode Multi-Provider API Proxy
+ * 
+ * 多供应商 API 代理 — 解决浏览器 CORS 问题
+ * 支持 MiniMax（三密钥轮换容灾）和 OpenCode Go 等供应商
+ * 所有密钥加密存储在 config.enc.php 中，永不暴露到前端
+ * 
+ * 🔒 安全防护：
+ *   ① CORS 域名白名单（仅允许 cmdcode.cn / qqcmd.com）
+ *   ② 前端访问令牌验证（_token 参数）
+ *   ③ config.enc.php 由 .htaccess 禁止直访
+ * 
+ * 用法（POST）：
+ *   { "_token": "xxx", "_provider": "minimax", "_path": "/chat/completions", ...请求体 }
+ *   { "_token": "xxx", "_provider": "opencode-go", ... }
+ * 
+ * 如果不传 _provider，默认使用 minimax（向后兼容）
+ */
+
+// ═══════════════════════════════════════
+// ① CORS 域名白名单
+// ═══════════════════════════════════════
+$CORS_ORIGINS = [
+    'https://appleclaw.cc',
+    'https://appleclaw.chat',
+    'https://appleclaw.cloud',
+    'https://appleclaw.live',
+    'https://appleclaw.net',
+    'https://appleclaw.online',
+    'https://appleclaw.shop',
+    'https://appleclaw.space',
+    'https://appleclaw.studio',
+    'https://appleclaw.top',
+    'https://appleclaw.video',
+    'https://appleclaw.vip',
+    'https://appleclaw.work',
+    'https://cmdbot.cn',
+    'https://cmdclaw.net',
+    'https://cmdcode.cn',
+    'https://dnmclaw.cn',
+    'https://dnmclaw.com',
+    'https://dnmclaw.online',
+    'https://dnmclaw.shop',
+    'https://qqclaw.club',
+    'https://qqclaw.shop',
+    'https://qqclaw.site',
+    'https://qqclaw.space',
+    'https://qqclaw.vip',
+    'https://qqcmd.cn',
+    'https://qqcmd.com',
+    'https://qqcmd.net',
+    'https://qqcmd.online',
+    'https://qqcmd.shop',
+    'https://qqqclaw.cn',
+    'https://www.cmdcode.cn',
+    'https://www.qqcmd.cn',
+    'https://www.qqcmd.com',
+    'https://yyclaw.net',
+    'https://yyyclaw.com',
+    'https://yyyclaw.fun',
+    'https://yyyclaw.net',
+    'https://yyyclaw.online',
+    'https://yyyclaw.shop',
+    // ─── HTTP 来源（40个） ───
+    'http://appleclaw.cc',
+    'http://appleclaw.chat',
+    'http://appleclaw.cloud',
+    'http://appleclaw.live',
+    'http://appleclaw.net',
+    'http://appleclaw.online',
+    'http://appleclaw.shop',
+    'http://appleclaw.space',
+    'http://appleclaw.studio',
+    'http://appleclaw.top',
+    'http://appleclaw.video',
+    'http://appleclaw.vip',
+    'http://appleclaw.work',
+    'http://cmdbot.cn',
+    'http://cmdclaw.net',
+    'http://cmdcode.cn',
+    'http://dnmclaw.cn',
+    'http://dnmclaw.com',
+    'http://dnmclaw.online',
+    'http://dnmclaw.shop',
+    'http://qqclaw.club',
+    'http://qqclaw.shop',
+    'http://qqclaw.site',
+    'http://qqclaw.space',
+    'http://qqclaw.vip',
+    'http://qqcmd.cn',
+    'http://qqcmd.com',
+    'http://qqcmd.net',
+    'http://qqcmd.online',
+    'http://qqcmd.shop',
+    'http://qqqclaw.cn',
+    'http://www.cmdcode.cn',
+    'http://www.qqcmd.cn',
+    'http://www.qqcmd.com',
+    'http://yyclaw.net',
+    'http://yyyclaw.com',
+    'http://yyyclaw.fun',
+    'http://yyyclaw.net',
+    'http://yyyclaw.online',
+    'http://yyyclaw.shop',
+];
+
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$allow_all = false; // 不允许通配
+
+if ($origin) {
+    $parsed = parse_url($origin, PHP_URL_HOST) ?: '';
+    $allowed = false;
+    foreach ($CORS_ORIGINS as $o) {
+        $oh = parse_url($o, PHP_URL_HOST);
+        if ($parsed === $oh) { $allowed = true; break; }
+    }
+    if ($allowed) {
+        header('Access-Control-Allow-Origin: ' . $origin);
+    } else {
+        // 非白名单来源，拒绝 CORS
+        header('Access-Control-Allow-Origin: https://cmdcode.cn');
+    }
+} else {
+    // 无 Origin 头（如 curl 直接调用）→ 允许但限制方法
+    header('Access-Control-Allow-Origin: https://cmdcode.cn');
+}
+
+header('Access-Control-Allow-Methods: POST, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type');
+
+// 处理预检请求
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+// ═══════════════════════════════════════
+// ③ 解析 JSON 请求体
+// ═══════════════════════════════════════
+$input = json_decode(file_get_contents('php://input'), true) ?: [];
+
+// ═══════════════════════════════════════
+// ④ 用户文件系统（可选 — 仅当 _action 参数存在时触发）
+// ═══════════════════════════════════════
+
+// 用户目录配置
+define('USERS_DIR', __DIR__ . '/users');
+if (!is_dir(USERS_DIR)) mkdir(USERS_DIR, 0755, true);
+$usersFile = USERS_DIR . '/.htusers.json';
+
+function loadUsers() {
+    global $usersFile;
+    if (!file_exists($usersFile)) return [];
+    return json_decode(file_get_contents($usersFile), true) ?: [];
+}
+function saveUsers($users) {
+    global $usersFile;
+    file_put_contents($usersFile, json_encode($users));
+}
+function getUserDir($username) {
+    $dir = USERS_DIR . '/' . preg_replace('/[^a-zA-Z0-9_]/', '_', $username);
+    if (!is_dir($dir)) mkdir($dir, 0755, true);
+    return $dir;
+}
+function getUserUsage($username) {
+    $dir = getUserDir($username);
+    $total = 0;
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if ($file->isFile()) $total += $file->getSize();
+    }
+    return $total;
+}
+define('QUOTA_BYTES', 100 * 1024 * 1024); // 100MB
+define('ACCESS_TOKEN', '__YOUR_ACCESS_TOKEN_HERE__'); // 前端访问令牌
+define('GUEST_QUOTA_BYTES', 1 * 1024 * 1024 * 1024); // 1GB shared for all guests
+
+// 安全辅助函数：获取当前有效用户目录（登录用户→个人文件夹，访客→共享 guest/ 文件夹）
+function getUserDirSafe() {
+    if (isset($_SESSION['user'])) return getUserDir($_SESSION['user']);
+    $dir = USERS_DIR . '/guest';
+    if (!is_dir($dir)) mkdir($dir, 0755, true);
+    foreach (['images','videos','music','voice','files'] as $sub) {
+        $sd = $dir . '/' . $sub;
+        if (!is_dir($sd)) @mkdir($sd, 0755, true);
+    }
+    return $dir;
+}
+function getUserQuotaSafe() {
+    return isset($_SESSION['user']) ? QUOTA_BYTES : GUEST_QUOTA_BYTES;
+}
+function getUserUsageSafe() {
+    $dir = getUserDirSafe();
+    $total = 0;
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        if ($file->isFile()) $total += $file->getSize();
+    }
+    return $total;
+}
+
+// 用户系统动作路由（优先级高于 API 代理）
+$action = $input['_action'] ?? $_GET['_action'] ?? '';
+if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash'])) {
+    session_start();
+    // ─── 全域 Token 认证（排除无需 token 的动作） ───
+    $exemptActions = ['register','login','session','get_proxy_token'];
+    $requiresToken = !in_array($action, $exemptActions);
+    // file_download + share_token 路径也无需 token
+    if ($action === 'file_download' && !empty($input['share_token'] ?? $_GET['share_token'] ?? '')) {
+        $requiresToken = false;
+    }
+    if ($requiresToken) {
+        $sentToken = $input['_token'] ?? $_GET['_token'] ?? '';
+        if ($sentToken !== ACCESS_TOKEN) {
+            http_response_code(403);
+            echo json_encode(['error' => 'token_invalid', 'message' => 'Access token is invalid or missing']);
+            exit;
+        }
+    }
+    switch ($action) {
+        case 'register':
+            $username = trim($input['username'] ?? '');
+            $password = $input['password'] ?? '';
+            if (strlen($username) < 2 || strlen($username) > 30) { echo json_encode(['error'=>'用户名长度2-30']); exit; }
+            if (strlen($password) < 4) { echo json_encode(['error'=>'密码至少4位']); exit; }
+            $users = loadUsers();
+            if (isset($users[$username])) { echo json_encode(['error'=>'用户名已存在']); exit; }
+            $users[$username] = password_hash($password, PASSWORD_BCRYPT);
+            saveUsers($users);
+            getUserDir($username);
+            echo json_encode(['success'=>true,'message'=>'注册成功']);
+            exit;
+
+        case 'login':
+            $username = trim($input['username'] ?? '');
+            $password = $input['password'] ?? '';
+            $users = loadUsers();
+            if (!isset($users[$username]) || !password_verify($password, $users[$username])) {
+                echo json_encode(['error'=>'用户名或密码错误']); exit;
+            }
+            $_SESSION['user'] = $username;
+            echo json_encode(['success'=>true,'username'=>$username]);
+            exit;
+
+        case 'logout':
+            session_destroy();
+            echo json_encode(['success'=>true]);
+            exit;
+
+        case 'session':
+            echo json_encode(['loggedIn'=>isset($_SESSION['user']),'username'=>$_SESSION['user']??null]);
+            exit;
+
+        case 'get_proxy_token':
+            echo json_encode(['token' => '__YOUR_ACCESS_TOKEN_HERE__']);
+            exit;
+
+        case 'quota':
+            $used = getUserUsageSafe();
+            $quota = getUserQuotaSafe();
+            echo json_encode(['usedBytes'=>$used,'usedMB'=>round($used/(1024*1024),1),'quotaMB'=>$quota/(1024*1024),'percent'=>round(($used/$quota)*100,1)]);
+            exit;
+
+        case 'file_read':
+            $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'], '/');
+            if (strpos($fullPath, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (!file_exists($fullPath)) { echo json_encode(['error'=>'文件未找到']); exit; }
+            $content = file_get_contents($fullPath);
+            $offset = (int)($input['offset'] ?? 0);
+            $limit = $input['limit'] ?? null;
+            if ($offset || $limit) {
+                $lines = explode("\n", $content);
+                $sliced = array_slice($lines, $offset, $limit);
+                $content = implode("\n", $sliced);
+            }
+            echo json_encode(['content'=>$content]);
+            exit;
+
+        case 'file_write':
+            $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'], '/');
+            if (strpos($fullPath, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
+            $content = !empty($input['_binary']) ? base64_decode($input['content'], true) : $input['content'] ?? '';
+            if (!empty($input['_binary']) && $content === false) { echo json_encode(['error'=>'二进制数据解码失败']); exit; }
+            $used = getUserUsageSafe();
+            $quota = getUserQuotaSafe();
+            $newSize = strlen($content);
+            if ($used + $newSize > $quota) { echo json_encode(['error'=>'超出存储配额']); exit; }
+            $dir = dirname($fullPath);
+            if (!is_dir($dir)) mkdir($dir, 0755, true);
+            file_put_contents($fullPath, $content);
+            echo json_encode(['success'=>true,'message'=>'文件已写入: '.$input['file_path']]);
+            exit;
+
+        case 'file_edit':
+            $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'], '/');
+            if (strpos($fullPath, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (!file_exists($fullPath)) { echo json_encode(['error'=>'文件未找到']); exit; }
+            $oldContent = file_get_contents($fullPath);
+            $oldStr = $input['old_string'];
+            $newStr = $input['new_string'];
+            if (strpos($oldContent, $oldStr) === false) { echo json_encode(['error'=>'未找到匹配字符串']); exit; }
+            $newContent = !empty($input['replace_all']) ? str_replace($oldStr, $newStr, $oldContent) : str_replace($oldStr, $newStr, $oldContent);
+            $diff = strlen($newContent) - strlen($oldContent);
+            if (getUserUsageSafe() + $diff > getUserQuotaSafe()) { echo json_encode(['error'=>'超出存储配额']); exit; }
+            file_put_contents($fullPath, $newContent);
+            echo json_encode(['success'=>true,'message'=>'文件已编辑: '.$input['file_path']]);
+            exit;
+
+        case 'file_delete':
+            $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'], '/');
+            if (strpos($fullPath, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (file_exists($fullPath)) { unlink($fullPath); echo json_encode(['success'=>true,'message'=>'文件已删除']); }
+            else { echo json_encode(['error'=>'文件不存在']); }
+            exit;
+
+        case 'list_files':
+            $base = getUserDirSafe();
+            $subPath = trim($input['path'] ?? '', '/');
+            $targetDir = $subPath ? $base . '/' . $subPath : $base;
+            if (strpos(realpath($targetDir) ?: $targetDir, realpath($base) ?: $base) !== 0) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (!is_dir($targetDir)) { echo json_encode(['error'=>'目录不存在']); exit; }
+            $files = []; $totalSize = 0;
+            foreach (new DirectoryIterator($targetDir) as $f) {
+                if ($f->isDot()) continue;
+                $relPath = $subPath ? $subPath . '/' . $f->getFilename() : $f->getFilename();
+                $entry = ['name'=>$f->getFilename(), 'path'=>$relPath, 'size'=>$f->getSize(), 'mtime'=>date('Y-m-d H:i:s', $f->getMTime()), 'is_dir'=>$f->isDir()];
+                if ($f->isDir()) {
+                    $entry['size'] = 0;
+                    $entry['file_count'] = iterator_count(new FilesystemIterator($f->getPathname(), FilesystemIterator::SKIP_DOTS));
+                } else {
+                    $totalSize += $f->getSize();
+                }
+                $files[] = $entry;
+            }
+            usort($files, function($a, $b) { return $b['is_dir'] <=> $a['is_dir'] ?: strcasecmp($a['name'], $b['name']); });
+            echo json_encode(['files'=>$files, 'currentPath'=>$subPath, 'totalSize'=>$totalSize, 'quotaMB'=>getUserQuotaSafe()/(1024*1024)]);
+            exit;
+
+        case 'file_rename':
+            $base = getUserDirSafe();
+            $oldPath = $input['old_path'] ?? '';
+            $newPath = $input['new_path'] ?? '';
+            if (!$oldPath || !$newPath) { echo json_encode(['error'=>'参数不完整']); exit; }
+            $fullOld = $base . '/' . ltrim($oldPath, '/');
+            $fullNew = $base . '/' . ltrim($newPath, '/');
+            if (strpos($fullOld, $base) !== 0 || strpos($fullNew, $base) !== 0) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (strpos($fullOld, '..') !== false || strpos($fullNew, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
+            if (!file_exists($fullOld)) { echo json_encode(['error'=>'文件不存在']); exit; }
+            $dir = dirname($fullNew);
+            if (!is_dir($dir)) mkdir($dir, 0755, true);
+            if (!rename($fullOld, $fullNew)) { echo json_encode(['error'=>'重命名失败']); exit; }
+            echo json_encode(['success'=>true, 'message'=>'已重命名为: '.$newPath]);
+            exit;
+
+        case 'file_save_from_url':
+            $url = $input['url'] ?? '';
+            $folder = trim($input['folder'] ?? '', '/');
+            if (!$url) { echo json_encode(['error'=>'URL不能为空']); exit; }
+            $content = @file_get_contents($url);
+            if ($content === false) { echo json_encode(['error'=>'下载失败']); exit; }
+            $used = getUserUsageSafe();
+            $quota = getUserQuotaSafe();
+            if ($used + strlen($content) > $quota) { echo json_encode(['error'=>'超出存储配额']); exit; }
+            $ext = pathinfo(parse_url($url, PHP_URL_PATH), PATHINFO_EXTENSION);
+            if (!$ext) $ext = 'bin';
+            $fname = ($folder ? $folder . '/' : '') . time() . '.' . $ext;
+            $fullPath = getUserDirSafe() . '/' . $fname;
+            $dir = dirname($fullPath);
+            if (!is_dir($dir)) mkdir($dir, 0755, true);
+            file_put_contents($fullPath, $content);
+            echo json_encode(['success'=>true, 'file'=>$fname, 'size'=>strlen($content)]);
+            exit;
+
+        case 'file_download':
+            // 临时分享令牌（无需登录）
+            $shareToken = $input['share_token'] ?? $_GET['share_token'] ?? '';
+            if ($shareToken) {
+                $tokenClean = preg_replace('/[^a-f0-9]/', '', $shareToken);
+                $shareFile = USERS_DIR . '/shares/' . $tokenClean . '.json';
+                if (file_exists($shareFile)) {
+                    $shareData = json_decode(file_get_contents($shareFile), true);
+                    if ($shareData && $shareData['expires'] > time()) {
+                        $fullPath = getUserDir($shareData['username']) . '/' . ltrim($shareData['path'], '/');
+                        if (file_exists($fullPath)) {
+                            $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
+                            $mimeMap = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','bmp'=>'image/bmp','svg'=>'image/svg+xml','mp3'=>'audio/mpeg','mp4'=>'video/mp4','pdf'=>'application/pdf','txt'=>'text/plain','html'=>'text/html','css'=>'text/css','js'=>'application/javascript','json'=>'application/json','md'=>'text/markdown','csv'=>'text/csv','zip'=>'application/zip'];
+                            header('Content-Type: ' . ($mimeMap[$ext] ?? 'application/octet-stream'));
+                            header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
+                            readfile($fullPath);
+                            exit;
+                        }
+                    }
+                }
+                http_response_code(403);
+                echo json_encode(['error'=>'分享链接无效或已过期']);
+                exit;
+            }
+            $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'] ?? $_GET['file_path'] ?? '', '/');
+            if (strpos($fullPath, '..') !== false) { http_response_code(403); echo json_encode(['error'=>'路径不合法']); exit; }
+            if (!file_exists($fullPath)) { http_response_code(404); echo json_encode(['error'=>'文件未找到']); exit; }
+            $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
+            $mimeMap = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','bmp'=>'image/bmp','svg'=>'image/svg+xml','mp3'=>'audio/mpeg','mp4'=>'video/mp4','pdf'=>'application/pdf','txt'=>'text/plain','html'=>'text/html','css'=>'text/css','js'=>'application/javascript','json'=>'application/json','md'=>'text/markdown','csv'=>'text/csv','zip'=>'application/zip'];
+            header('Content-Type: ' . ($mimeMap[$ext] ?? 'application/octet-stream'));
+            header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
+            readfile($fullPath);
+            exit;
+        case 'generate_share_link':
+            $filePath = $input['file_path'] ?? '';
+            if (!$filePath) { echo json_encode(['error'=>'file_path不能为空']); exit; }
+            $fullPath = getUserDirSafe() . '/' . ltrim($filePath, '/');
+            if (strpos($fullPath, '..') !== false || !file_exists($fullPath)) { echo json_encode(['error'=>'文件不存在']); exit; }
+            $token = bin2hex(random_bytes(16));
+            $expires = time() + 3600; // 1 hour
+            $shareDir = USERS_DIR . '/shares';
+            if (!is_dir($shareDir)) @mkdir($shareDir, 0755, true);
+            $effectiveUser = $_SESSION['user'] ?? 'guest';
+            file_put_contents("$shareDir/$token.json", json_encode([
+                'path' => $filePath,
+                'username' => $effectiveUser,
+                'expires' => $expires,
+            ]));
+            $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+            $baseUrl = $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'cmdcode.cn') . dirname($_SERVER['SCRIPT_NAME']);
+            echo json_encode([
+                'share_url' => $baseUrl . '/proxy.php?_action=file_download&share_token=' . $token,
+                'expires' => $expires,
+                'expires_in' => '1小时',
+            ]);
+            exit;
+        case 'web_fetch':
+            $url = $input['url'] ?? '';
+            if (!$url) { echo json_encode(['error'=>'URL不能为空']); exit; }
+            if (!filter_var($url, FILTER_VALIDATE_URL)) { echo json_encode(['error'=>'URL格式不合法']); exit; }
+            $maxChars = (int)($input['max_chars'] ?? 50000);
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 15,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_MAXREDIRS => 5,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                CURLOPT_HTTPHEADER => ['Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8','Accept-Language: zh-CN,zh;q=0.9,en;q=0.8'],
+            ]);
+            $body = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($body === false) { echo json_encode(['error'=>'请求失败: '.$error]); exit; }
+            if (strlen($body) > $maxChars) $body = substr($body, 0, $maxChars) . "\n\n... (已截断)";
+            echo json_encode(['success'=>true,'url'=>$url,'httpCode'=>$httpCode,'content'=>$body,'length'=>strlen($body)]);
+            exit;
+        case 'bash':
+            $cmd = $input['command'] ?? '';
+            if (!$cmd) { echo json_encode(['error'=>'命令不能为空']); exit; }
+            $timeout = (int)($input['timeout'] ?? 30);
+            if ($timeout < 1) $timeout = 5;
+            if ($timeout > 60) $timeout = 60;
+            $dangerous = ['rm -rf /', 'mkfs', 'dd if=', ':(){', '> /dev/sda', 'chmod 777 /', 'wget -O /', 'curl .* -o /etc', 'mv .* /etc', 'sudo ', 'su -'];
+            foreach ($dangerous as $pattern) {
+                if (stripos($cmd, $pattern) !== false) {
+                    echo json_encode(['error'=>'该命令已被安全策略拦截']); exit;
+                }
+            }
+            $escaped = escapeshellcmd($cmd);
+            $result = null;
+            @set_time_limit($timeout + 5);
+            // 尝试多种执行方式（proc_open→exec→shell_exec）
+            if ($result === null && function_exists('proc_open') && !in_array('proc_open', explode(',', ini_get('disable_functions')))) {
+                $descriptorspec = [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']];
+                $process = @proc_open($escaped, $descriptorspec, $pipes, null, null);
+                if (is_resource($process)) {
+                    fclose($pipes[0]);
+                    $stdout = stream_get_contents($pipes[1]);
+                    $stderr = stream_get_contents($pipes[2]);
+                    fclose($pipes[1]); fclose($pipes[2]);
+                    $exitCode = proc_close($process);
+                    $result = ['stdout'=>$stdout, 'stderr'=>$stderr, 'exitCode'=>$exitCode];
+                }
+            }
+            if ($result === null && function_exists('exec') && !in_array('exec', explode(',', ini_get('disable_functions')))) {
+                $output = []; $exitCode = -1;
+                $lastLine = @exec($escaped . ' 2>/tmp/exec_stderr.tmp', $output, $exitCode);
+                $stderr = @file_get_contents('/tmp/exec_stderr.tmp');
+                @unlink('/tmp/exec_stderr.tmp');
+                $result = ['stdout'=>implode("\n", $output), 'stderr'=>$stderr ?: '', 'exitCode'=>$exitCode];
+            }
+            if ($result === null && function_exists('shell_exec') && !in_array('shell_exec', explode(',', ini_get('disable_functions')))) {
+                $stdout = @shell_exec($escaped);
+                $result = ['stdout'=>$stdout ?: '', 'stderr'=>'', 'exitCode'=>0];
+            }
+            if ($result === null) {
+                echo json_encode(['error'=>'所有命令执行函数皆不可用（proc_open/exec/shell_exec均被禁用）']); exit;
+            }
+            $maxOutput = 50000;
+            if (strlen($result['stdout']) > $maxOutput) $result['stdout'] = substr($result['stdout'],0,$maxOutput)."\n\n... (输出已截断)";
+            if (strlen($result['stderr']) > $maxOutput) $result['stderr'] = substr($result['stderr'],0,$maxOutput)."\n\n... (输出已截断)";
+            echo json_encode(['success'=>true,'command'=>$cmd,'stdout'=>$result['stdout'],'stderr'=>$result['stderr'],'exitCode'=>$result['exitCode']]);
+            exit;
+    }
+    exit;
+}
+
+// ═══════════════════════════════════════
+// ④ 前端访问令牌验证（API 代理需要）
+// ═══════════════════════════════════════
+
+$token = $input['_token'] ?? $_GET['_token'] ?? '';
+unset($input['_token']);
+
+if ($token !== ACCESS_TOKEN) {
+    http_response_code(403);
+    echo json_encode([
+        'error' => 'token_invalid',
+        'message' => 'Access token is invalid or missing',
+    ]);
+    exit;
+}
+
+// ═══════════════════════════════════════
+// ⑤ 加载加密配置
+// ═══════════════════════════════════════
+$PROVIDERS = include __DIR__ . '/config.enc.php';
+if (!is_array($PROVIDERS)) {
+    http_response_code(500);
+    echo json_encode(['error' => 'config_load_failed', 'message' => '加密配置加载失败']);
+    exit;
+}
+
+// ── 解析请求 ──
+$method = $_SERVER['REQUEST_METHOD'];
+$provider_name = $input['_provider'] ?? $_GET['_provider'] ?? 'minimax';
+$api_path = $input['_path'] ?? $_GET['_path'] ?? '';
+unset($input['_provider']);
+unset($input['_path']);
+
+// 检查供应商是否存在
+if (!isset($PROVIDERS[$provider_name])) {
+    http_response_code(400);
+    echo json_encode([
+        'error' => 'unknown_provider',
+        'message' => "未知供应商: $provider_name",
+        'available' => array_keys($PROVIDERS),
+    ]);
+    exit;
+}
+
+$provider = $PROVIDERS[$provider_name];
+$api_keys = $provider['keys'];
+$base_url = rtrim($provider['base_url'], '/');
+
+// 如果没传 _path，默认使用 /chat/completions
+if (!$api_path) {
+    $api_path = '/chat/completions';
+}
+
+$target_url = $base_url . $api_path;
+
+// ═══════════════════════════════════════
+// ⑥ 异步音乐生成处理
+// ═══════════════════════════════════════
+// MiniMax 音乐生成耗时 60-90s，但 XinCache nginx proxy_read_timeout 约 60s → 504
+// 方案：
+//   ① proxy.php 立即返回 task_id（fastcgi_finish_request）
+//   ② PHP 继续在后台执行 curl（IO 等待不计入 max_execution_time=30s）
+//   ③ 前端轮询 /music_poll 拿结果
+// ⚠️ 所有进程执行函数（exec/proc_open/shell_exec）均已禁用，无法启动独立 worker
+//     必须用 fastcgi_finish_request 在同一进程里"去前台后处理"
+
+if ($api_path === '/music_generation') {
+    $taskId = bin2hex(random_bytes(8)); // 16 字节 hex
+    $taskDir = '/vhost/tmp/music_tasks';
+    if (!is_dir($taskDir)) {
+        @mkdir($taskDir, 0755, true);
+    }
+
+    // 保存请求参数（序列化）— 后台由 Hermes Cron 拉取处理，不依赖 PHP-FPM 长进程
+    file_put_contents("$taskDir/$taskId.params", serialize($input));
+
+    // 立即返回 task_id，前端轮询
+    header('Content-Type: application/json');
+    echo json_encode([
+        'task_id' => $taskId,
+        'status' => 'processing',
+        'message' => '音乐生成已提交',
+    ]);
+    exit;
+}
+
+// 音乐生成结果查询
+if ($api_path === '/music_poll') {
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id', 'message' => '无效的 task_id']);
+        exit;
+    }
+
+    $taskDir = '/vhost/tmp/music_tasks';
+    $resultFile = "$taskDir/$taskId.result";
+
+    header('Content-Type: application/json');
+    if (file_exists($resultFile)) {
+        $content = file_get_contents($resultFile);
+        // 清理任务文件
+        @unlink($resultFile);
+        @unlink("$taskDir/$taskId.params");
+        echo $content;
+    } else {
+        echo json_encode(['status' => 'pending']);
+    }
+    exit;
+}
+
+// ═══════════════════════════════════════
+// ⑦ Hermes Cron 驱动的后台任务处理
+// ═══════════════════════════════════════
+// 不再依赖 fastcgi_finish_request（PHP-FPM 会杀死后台 worker）
+// 改为：proxy.php 只保存任务参数 → Hermes Cron 定期调用 /music_process 拉取处理
+// Cron 从 Hermes 服务器调用 /music_process，不受 XinCache PHP-FPM 超时影响
+
+// 列出所有待处理任务（返回 task_id 数组）
+if ($api_path === '/music_pending') {
+    header('Content-Type: application/json');
+    $taskDir = '/vhost/tmp/music_tasks';
+    $pending = [];
+    if (is_dir($taskDir)) {
+        foreach (glob("$taskDir/*.params") as $paramFile) {
+            $id = basename($paramFile, '.params');
+            if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
+            if (!file_exists("$taskDir/$id.result")) {
+                // 检查是否超时（超过 30 分钟未处理则忽略）
+                $age = time() - filemtime($paramFile);
+                if ($age < 1800) {
+                    $pending[] = $id;
+                }
+            }
+        }
+    }
+    echo json_encode(['pending' => $pending, 'count' => count($pending)]);
+    exit;
+}
+
+// 处理一个待处理任务（由 Hermes Cron 调用）
+if ($api_path === '/music_process') {
+    header('Content-Type: application/json');
+    $taskId = $_GET['task_id'] ?? $input['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+
+    $taskDir = '/vhost/tmp/music_tasks';
+    $paramFile = "$taskDir/$taskId.params";
+
+    if (!file_exists($paramFile)) {
+        echo json_encode(['error' => 'task_not_found']);
+        exit;
+    }
+
+    // 已有结果，跳过
+    if (file_exists("$taskDir/$taskId.result")) {
+        $content = file_get_contents("$taskDir/$taskId.result");
+        echo $content;
+        exit;
+    }
+
+    // 读取原始请求参数
+    $originalInput = unserialize(file_get_contents($paramFile));
+    if (!$originalInput || !is_array($originalInput)) {
+        file_put_contents("$taskDir/$taskId.result", json_encode([
+            'error' => 'invalid_params',
+            'message' => '任务参数损坏',
+        ]));
+        echo json_encode(['status' => 'failed', 'error' => 'invalid_params']);
+        exit;
+    }
+
+    // 调用 MiniMax API（同步，长超时 180s）
+    $music_url = $base_url . '/music_generation';
+    $last_error = '';
+    $result = null;
+
+    foreach ($api_keys as $idx => $key) {
+        if (empty($key)) continue;
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $music_url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 180,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $key,
+            ],
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($originalInput),
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TCP_KEEPALIVE => 1,
+            CURLOPT_TCP_KEEPIDLE => 30,
+        ]);
+
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) { $last_error = $error; continue; }
+        if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+
+        $result = ['http_code' => $http_code, 'body' => $response];
+        break;
+    }
+
+    if ($result) {
+        $bodyData = json_decode($result['body'], true);
+        $output = $bodyData ?: ['raw' => $result['body']];
+        $output['_http_code'] = $result['http_code'];
+        file_put_contents("$taskDir/$taskId.result", json_encode($output));
+        @unlink($paramFile);
+        echo json_encode(['status' => 'completed']);
+    } else {
+        file_put_contents("$taskDir/$taskId.result", json_encode([
+            'error' => 'proxy_all_keys_exhausted',
+            'message' => '所有 API Key 均已耗尽: ' . $last_error,
+        ]));
+        echo json_encode(['status' => 'failed', 'error' => $last_error]);
+    }
+    exit;
+}
+
+// 读取任务参数（供 Hermes Cron 从外部服务器直接调用 MiniMax API）
+if ($api_path === '/music_read_params') {
+    header('Content-Type: application/json');
+    $taskId = $_GET['task_id'] ?? $input['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $paramFile = "/vhost/tmp/music_tasks/$taskId.params";
+    if (!file_exists($paramFile)) {
+        echo json_encode(['error' => 'task_not_found']);
+        exit;
+    }
+    $originalInput = unserialize(file_get_contents($paramFile));
+    echo json_encode([
+        'task_id' => $taskId,
+        'params' => $originalInput,
+        'provider' => $provider_name,
+        'api_path' => '/music_generation',
+    ]);
+    exit;
+}
+
+// 写入任务结果（供 Hermes Cron 在外部调用 MiniMax 后回写结果）
+if ($api_path === '/music_write_result') {
+    header('Content-Type: application/json');
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $resultData = $input['result'] ?? [];
+    if (empty($resultData)) {
+        echo json_encode(['error' => 'missing_result']);
+        exit;
+    }
+    $taskDir = '/vhost/tmp/music_tasks';
+    file_put_contents("$taskDir/$taskId.result", json_encode($resultData));
+    @unlink("$taskDir/$taskId.params");
+    echo json_encode(['status' => 'saved']);
+    exit;
+}
+
+// 获取供应商配置（仅供系统 crontab 从本机服务器调用，不暴露给浏览器）
+if ($api_path === '/music_get_provider') {
+    header('Content-Type: application/json');
+    // IP 限制：只允许本机 Hermes 服务器调用
+    $allowedIPs = ['156.227.27.58', '127.0.0.1'];
+    $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
+    if (!in_array($remoteIP, $allowedIPs)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'forbidden', 'message' => '仅允许内部服务器调用']);
+        exit;
+    }
+    if (!isset($PROVIDERS['minimax'])) {
+        echo json_encode(['error' => 'provider_not_found']);
+        exit;
+    }
+    $provider = $PROVIDERS['minimax'];
+    echo json_encode([
+        'base_url' => $provider['base_url'],
+        'keys' => $provider['keys'],
+    ]);
+    exit;
+}
+
+// ── 轮询尝试各密钥 ──
+$last_error = '';
+foreach ($api_keys as $idx => $key) {
+    if (empty($key)) {
+        $last_error = "Key " . ($idx + 1) . " is empty (placeholder)";
+        continue;
+    }
+
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $target_url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $key,
+        ],
+    ]);
+
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($input));
+    } elseif ($method === 'GET') {
+        curl_setopt($ch, CURLOPT_HTTPGET, true);
+    }
+
+    $response = curl_exec($ch);
+    $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($error) {
+        $last_error = $error;
+        continue;
+    }
+
+    if ($http_code === 429) {
+        $last_error = "Key " . ($idx + 1) . " rate limited";
+        continue;
+    }
+
+    // 成功
+    http_response_code($http_code);
+    echo $response;
+    exit;
+}
+
+// ── 所有密钥都失败 ──
+http_response_code(503);
+echo json_encode([
+    'error' => 'proxy_all_keys_exhausted',
+    'message' => '所有 API Key 均已耗尽或代理请求失败: ' . $last_error,
+    'available_keys' => count($api_keys),
+    'provider' => $provider_name,
+]);
