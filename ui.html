@@ -506,9 +506,9 @@ async function loginUser(username){
 }
 
 async function logoutUser(){
-  // 退出前触发记忆提取
+  // 退出前触发记忆提取（等待完成，确保请求发出后再清令牌）
   if(currentUser&&recentConversationMessages.length>=2){
-    triggerMemoryExtraction(recentConversationMessages);
+    try{await triggerMemoryExtraction(recentConversationMessages);}catch(e){}
   }
   try{await apiCall('logout');}catch(e){}
   currentUser=null;
@@ -1380,9 +1380,9 @@ async function shareCurrentImage(){
   ivShareBtn.disabled=false;
 }
 
-// ── 会话结束：关闭页面时触发记忆提取 ──
+// ── 会话结束：关闭页面或退出时触发记忆提取 ──
 window.addEventListener('beforeunload',function(){
-  if(accessToken&&recentConversationMessages.length>=2){
+  if((currentUser||accessToken)&&recentConversationMessages.length>=2){
     navigator.sendBeacon(PROXY_URL,JSON.stringify({
       _action:'memory',sub_action:'enqueue_extract',
       messages:recentConversationMessages.slice(-10),
