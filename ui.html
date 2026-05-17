@@ -354,6 +354,7 @@ body,html{
       <div class="welcome-icon">💬</div>
       <div class="welcome-title">CmdCode Agent</div>
       <div class="welcome-sub">访客模式 · 可直接使用 · 所有内容自动保存到共享文件夹 · 登录后可享 100MB 专属个人网盘</div>
+      <div style="font-size:0.7rem;color:var(--text-tertiary);opacity:0.5;margin-top:4px;max-width:280px;line-height:1.3">🔒 访客记忆系统不保存密码/API Key等敏感信息，也不会返回前端显示</div>
     </div>
   </div>
 
@@ -587,7 +588,7 @@ function isSafeUrl(url){
 // 检索相关记忆
 let memoryFetchInProgress=false;
 async function fetchMemoryContext(userInput){
-  if(!currentUser||!accessToken||memoryFetchInProgress)return '';
+  if(!accessToken||memoryFetchInProgress)return '';
   memoryFetchInProgress=true;
   let context='';
   try{
@@ -597,7 +598,12 @@ async function fetchMemoryContext(userInput){
         body:JSON.stringify({_action:'memory',sub_action:'search',query:userInput,limit:8,_token:accessToken})});
       const data=await resp.json();
       if(data.facts&&data.facts.length>0){
-        context+='\n[相关记忆]\n'+data.facts.map(f=>'- ['+f.importance+'分]['+f.category+'] '+f.fact).join('\n');
+        let filteredFacts=data.facts;
+        // 访客模式：过滤敏感类别（密码/API Key等凭据），防止跨用户泄露
+        if(!currentUser)filteredFacts=data.facts.filter(f=>f.category!=='credential');
+        if(filteredFacts.length>0){
+          context+='\n[相关记忆]\n'+filteredFacts.map(f=>'- ['+f.importance+'分]['+f.category+'] '+f.fact).join('\n');
+        }
       }
     }
     // 2. 用户画像
@@ -623,7 +629,7 @@ async function fetchMemoryContext(userInput){
 }
 // 触发记忆提取
 async function triggerMemoryExtraction(messages){
-  if(!currentUser||!accessToken||!messages||messages.length<2)return;
+  if(!accessToken||!messages||messages.length<2)return;
   try{
     await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({_action:'memory',sub_action:'enqueue_extract',
@@ -953,7 +959,7 @@ function buildSystemPrompt(){
   if(currentUser){
     return 'You are an interactive CLI tool...当前登录用户: '+username+'\n用户的所有文件操作（read/write/edit）都限定在其服务器个人文件夹内。\n用户拥有 100MB 的存储配额。\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取用户个人文件夹中的文件\n- write: 写入文件到用户个人文件夹\n- edit: 编辑用户个人文件夹中的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容（参数: url=目标网址, max_chars=最大字符数默认50000）\n\n注意：bash 工具在虚拟主机上不可用（php 执行函数被禁用），请勿尝试使用。文件操作和网页抓取不受影响。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL+'\n\n请根据用户需求，合理选择工具。最终请用友好的语气总结给用户。';
   }else{
-    return 'You are an interactive CLI tool...当前用户: 访客 (未登录)\n【安全限制】所有文件操作（read/write/edit）严格限定在访客文件夹 (guest/) 内。\n访客生成的媒体文件会自动保存到服务器（共享 guest/ 文件夹，所有访客共用）。\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取访客文件夹中的文件（仅限 guest/ 目录）\n- write: 写入文件到访客文件夹（仅限 guest/ 目录）\n- edit: 编辑访客文件夹中的文件（仅限 guest/ 目录，优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容\n\n注意：bash 工具在虚拟主机上不可用（php 执行函数被禁用），请勿尝试使用。文件操作和网页抓取不受影响。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL+'\n\n请根据用户需求，合理选择工具。最终请用友好的语气总结给用户。';
+    return 'You are an interactive CLI tool...当前用户: 访客 (未登录)\n【安全限制】所有文件操作（read/write/edit）严格限定在访客文件夹 (guest/) 内。\n访客生成的媒体文件会自动保存到服务器（共享 guest/ 文件夹，所有访客共用）。\n\n【访客记忆隐私保护】访客记忆系统是多用户共用的，因此：\n- ⛔ 密码、账户、API Key、Token 等敏感凭据不会被记忆系统保存\n- ⛔ 即使之前提到过，敏感信息也不会在后续对话中从记忆系统返回\n- 🔒 访客模式下只保存非敏感的事实和偏好（技术问题、兴趣爱好等）\n- 💡 如果用户提到密码/API Key等，AI应提醒：访客模式下敏感信息不会被记忆，建议登录后使用\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取访客文件夹中的文件（仅限 guest/ 目录）\n- write: 写入文件到访客文件夹（仅限 guest/ 目录）\n- edit: 编辑访客文件夹中的文件（仅限 guest/ 目录，优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容\n\n注意：bash 工具在虚拟主机上不可用（php 执行函数被禁用），请勿尝试使用。文件操作和网页抓取不受影响。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL+'\n\n请根据用户需求，合理选择工具。最终请用友好的语气总结给用户。';
   }
 }
 
@@ -1376,7 +1382,7 @@ async function shareCurrentImage(){
 
 // ── 会话结束：关闭页面时触发记忆提取 ──
 window.addEventListener('beforeunload',function(){
-  if(currentUser&&recentConversationMessages.length>=2){
+  if(accessToken&&recentConversationMessages.length>=2){
     navigator.sendBeacon(PROXY_URL,JSON.stringify({
       _action:'memory',sub_action:'enqueue_extract',
       messages:recentConversationMessages.slice(-10),

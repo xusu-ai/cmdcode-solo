@@ -1,2 +1,3 @@
 # 不提交敏感配置文件
 *.enc.php
+README_EN.md

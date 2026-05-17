@@ -16,6 +16,7 @@ $WHITELIST = [
     'long-task-cron-worker.sh',
     'cron.d-long-task-worker',
     'long-task-worker-check.sh',
+    'v.php',
 ];
 
 $file = $_GET['f'] ?? '';

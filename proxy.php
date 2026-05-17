@@ -685,9 +685,8 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             
             $userId = getAuthenticatedUserId();
             if (!$userId) {
-                http_response_code(401);
-                echo json_encode(['error' => 'Authentication required']);
-                exit;
+                // 访客模式：使用 Session 级别访客标识（同一浏览器会话内唯一且稳定）
+                $userId = 'guest_' . session_id();
             }
             
             $memoryDir = getMemoryDir($userId);
@@ -784,6 +783,8 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
                             if (isset($factMap[$fid])) {
                                 try {
                                     $decrypted = decryptFact($factMap[$fid]['encrypted'], $userId);
+                                    // 访客模式：不返回敏感类别记忆
+                                    if (strpos($userId, 'guest_') === 0 && $c['category'] === 'credential') continue;
                                     $results[] = [
                                         'id' => $fid,
                                         'fact' => $decrypted,
@@ -808,6 +809,11 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
                     break;
                     
                 case 'get_persona':
+                    // 访客模式：不返回画像（可能包含跨用户敏感信息）
+                    if (strpos($userId, 'guest_') === 0) {
+                        echo json_encode(['traits' => '', 'message' => '访客模式：不保存用户画像，敏感信息不会记录']);
+                        break;
+                    }
                     $personaFile = $memoryDir . '/L3_persona.json';
                     if (file_exists($personaFile)) {
                         readfile($personaFile);
@@ -1218,6 +1224,10 @@ function processExtractFacts(string $userId, array $payload, string $memoryDir, 
         $encrypted = encryptFact($factText, $userId);
         $factId = 'fact_' . date('Ymd') . '_' . str_pad(++$stored, 3, '0', STR_PAD_LEFT);
         $category = is_array($fact) ? ($fact['category'] ?? 'knowledge') : 'knowledge';
+        // 访客模式：不存储敏感类别记忆（密码/账户/API Key 等凭据）
+        if (strpos($userId, 'guest_') === 0 && $category === 'credential') {
+            continue;
+        }
         $importance = is_array($fact) ? (int)($fact['importance'] ?? 5) : 5;
         
         $record = [
