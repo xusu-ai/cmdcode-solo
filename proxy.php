@@ -348,7 +348,8 @@ function getUserUsage($username) {
     }
     return $total;
 }
-define('QUOTA_BYTES', 100 * 1024 * 1024); // 100MB
+define('QUOTA_BYTES', 1024 * 1024 * 1024); // 1GB (admin)
+define('REGULAR_QUOTA_BYTES', 100 * 1024 * 1024); // 100MB (普通用户)
 define('ACCESS_TOKEN', '__YOUR_PROXY_ACCESS_TOKEN__'); // 前端访问令牌
 define('GUEST_QUOTA_BYTES', 1 * 1024 * 1024 * 1024); // 1GB shared for all guests
 
@@ -364,7 +365,8 @@ function getUserDirSafe() {
     return $dir;
 }
 function getUserQuotaSafe() {
-    return isset($_SESSION['user']) ? QUOTA_BYTES : GUEST_QUOTA_BYTES;
+    if (!isset($_SESSION['user'])) return GUEST_QUOTA_BYTES;
+    return $_SESSION['user'] === 'admin' ? QUOTA_BYTES : REGULAR_QUOTA_BYTES;
 }
 function getUserUsageSafe() {
     $dir = getUserDirSafe();
