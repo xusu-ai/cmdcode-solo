@@ -425,7 +425,7 @@ const ivShareBtn=document.getElementById('ivShareBtn');
 const ivContainer=document.getElementById('ivContainer');
 const ivName=document.getElementById('ivName');
 
-const PROXY_URL='https://__YOUR_PROXY_DOMAIN__/cmdcode-minimax-toolset/proxy.php';
+const PROXY_URL='https://cmdcode.cn/cmdcode-minimax-toolset/proxy.php';
 let accessToken='';  // 从服务器端获取，不硬编码在前端
 let isRunning=false;
 let abortController=null;
@@ -440,6 +440,7 @@ function restrictPath(filePath){
 }
 let modalMode='login';
 let currentSession={messages:[],awaitingUser:false,pendingToolCallId:null};
+let recentConversationMessages=[]; // 用于记忆系统提取
 let fmCurrentPath='';
 let currentFileList=[];
 let ivImageList=[];
@@ -504,11 +505,16 @@ async function loginUser(username){
 }
 
 async function logoutUser(){
+  // 退出前触发记忆提取
+  if(currentUser&&recentConversationMessages.length>=2){
+    triggerMemoryExtraction(recentConversationMessages);
+  }
   try{await apiCall('logout');}catch(e){}
   currentUser=null;
   accessToken='';  // 清除令牌
   updateUIForUser(null);
   currentSession={messages:[],awaitingUser:false,pendingToolCallId:null};
+  recentConversationMessages=[];
   addAgentMessage('👋 已退出登录。');
 }
 
@@ -575,6 +581,56 @@ function escapeHtml(text){
 function isSafeUrl(url){
   const u=(url||'').trim().toLowerCase();
   return !/^(javascript|data|vbscript|livescript):/.test(u);
+}
+
+// ── Memory System Functions ──
+// 检索相关记忆
+let memoryFetchInProgress=false;
+async function fetchMemoryContext(userInput){
+  if(!currentUser||!accessToken||memoryFetchInProgress)return '';
+  memoryFetchInProgress=true;
+  let context='';
+  try{
+    // 1. 语义搜索记忆
+    if(userInput&&userInput.length>3){
+      const resp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+        body:JSON.stringify({_action:'memory',sub_action:'search',query:userInput,limit:8,_token:accessToken})});
+      const data=await resp.json();
+      if(data.facts&&data.facts.length>0){
+        context+='\n[相关记忆]\n'+data.facts.map(f=>'- ['+f.importance+'分]['+f.category+'] '+f.fact).join('\n');
+      }
+    }
+    // 2. 用户画像
+    const personaResp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+      body:JSON.stringify({_action:'memory',sub_action:'get_persona',_token:accessToken})});
+    if(personaResp.ok){
+      const pData=await personaResp.json();
+      if(pData.traits)context+='\n[用户画像]\n'+pData.traits;
+    }
+    // 3. 当前场景上下文
+    const sceneId=localStorage.getItem('cmdcode_current_scene')||'scene_default';
+    if(sceneId){
+      const sceneResp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+        body:JSON.stringify({_action:'memory',sub_action:'get_scene',scene_id:sceneId,_token:accessToken})});
+      if(sceneResp.ok){
+        const sData=await sceneResp.json();
+        if(sData.summary)context+='\n[当前场景: '+(sData.name||'')+']\n'+sData.summary;
+      }
+    }
+  }catch(e){if(e.name!=='AbortError')console.warn('Memory fetch failed',e);}
+  memoryFetchInProgress=false;
+  return context;
+}
+// 触发记忆提取
+async function triggerMemoryExtraction(messages){
+  if(!currentUser||!accessToken||!messages||messages.length<2)return;
+  try{
+    await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({_action:'memory',sub_action:'enqueue_extract',
+        messages:messages.slice(0,10), // 最多10条
+        scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
+        _token:accessToken})});
+  }catch(e){}
 }
 
 // ── Token Estimator ──
@@ -915,7 +971,19 @@ async function runAgentLoop(userMessage){
     currentSession.awaitingUser=false;
     addStepMessage('收到用户回答，继续执行...');
   }else{
-    messages=[{role:'system',content:buildSystemPrompt()},{role:'user',content:userMessage}];
+    // ── 记忆注入：在构建系统提示前检索相关记忆 ──
+    let memoryContext='';
+    addStepMessage('正在检索相关记忆...');
+    memoryContext=await fetchMemoryContext(userMessage);
+    if(memoryContext){
+      addStepMessage('找到相关记忆，已注入上下文');
+    }else{
+      addStepMessage('未找到相关记忆');}
+    const basePrompt=buildSystemPrompt();
+    const enrichedPrompt=memoryContext?basePrompt+'\n\n[记忆上下文]\n以下是之前与该用户的对话中提取的记忆，参考这些记忆更能理解用户背景：\n'+memoryContext:basePrompt;
+    messages=[{role:'system',content:enrichedPrompt},{role:'user',content:userMessage}];
+    // 记录用户消息用于后续提取
+    recentConversationMessages.push({role:'user',content:userMessage,time:Date.now()});
   }
   const MAX_LOOPS=10;let loopCount=0;let consecutiveFailures=0;
   try{
@@ -935,7 +1003,11 @@ async function runAgentLoop(userMessage){
     const reasoning=ThinkingModeHandler.extractReasoning(message);
     if(reasoning)addStepMessage('推理: '+reasoning.slice(0,150)+'...');
     if(stopRequested){addStepMessage('⏹ 已停止');break;}
-    if(!message.tool_calls||message.tool_calls.length===0){addAgentMessage(message.content||message.reasoning_content||'(无内容)');break;}
+    if(!message.tool_calls||message.tool_calls.length===0){
+      // 记录AI回复用于后续提取
+      recentConversationMessages.push({role:'assistant',content:message.content||'',time:Date.now()});
+      addAgentMessage(message.content||message.reasoning_content||'(无内容)');break;
+    }
     const toolCalls=message.tool_calls;
     addStepMessage('模型请求调用 '+toolCalls.length+' 个工具');
     messages.push({role:'assistant',content:message.content||'',tool_calls:toolCalls,...(message.reasoning_content?{reasoning_content:message.reasoning_content}:{})});
@@ -949,6 +1021,10 @@ async function runAgentLoop(userMessage){
   }
   if(loopCount>=MAX_LOOPS)addAgentMessage('达到最大循环次数，已停止。');
   }catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');}else{addAgentMessage('❌ 错误: '+e.message);}}
+  // ── 对话结束后异步触发记忆提取 ──
+  if(currentUser&&recentConversationMessages.length>=2){
+    triggerMemoryExtraction(recentConversationMessages);
+  }
   setRunning(false);currentSession.awaitingUser=false;abortController=null;
 }
 
@@ -1297,6 +1373,19 @@ async function shareCurrentImage(){
   ivShareBtn.textContent='↗';
   ivShareBtn.disabled=false;
 }
+
+// ── 会话结束：关闭页面时触发记忆提取 ──
+window.addEventListener('beforeunload',function(){
+  if(currentUser&&recentConversationMessages.length>=2){
+    navigator.sendBeacon(PROXY_URL,JSON.stringify({
+      _action:'memory',sub_action:'enqueue_extract',
+      messages:recentConversationMessages.slice(-10),
+      scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
+      trigger:'session_end',
+      _token:accessToken
+    }));
+  }
+});
 
 // ── Image Viewer Events ──
 ivCloseBtn.addEventListener('click',function(){ivOverlay.classList.add('hidden');ivName.textContent='';ivCurrentFile=null;ivContainer.innerHTML='';});

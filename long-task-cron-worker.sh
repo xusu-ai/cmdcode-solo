@@ -4,11 +4,12 @@
 # 通用长任务 Worker — 处理音乐/视频等长时间运行的 MiniMax API 任务
 # 从香港站拉取 pending 任务，在本机调 MiniMax，再写回结果
 
-PROXY_URL="https://__YOUR_PROXY_DOMAIN__/cmdcode-minimax-toolset/proxy.php"
-TOKEN="__YOUR_PROXY_ACCESS_TOKEN__"
+PROXY_URL="https://cmdcode.cn/cmdcode-minimax-toolset/proxy.php"
+TOKEN="__YOUR_PROXY_TOKEN__"
 LOCK_FILE="/tmp/long-task-worker.lock"
 HEARTBEAT_FILE="/tmp/long-task-worker-heartbeat"
 TIMEOUT=180
+MAX_TASKS=5  # 每轮最多处理5个记忆任务
 
 # 防重叠锁
 if [ -f "$LOCK_FILE" ]; then
@@ -117,4 +118,39 @@ print(json.dumps(d.get('params',{})))
 process_task "music"  "/music_pending"     "/music_read_params"     "/music_write_result"     "/music_generation" && exit 0
 process_task "video"  "/video_pending"     "/video_read_params"     "/video_write_result"     "/video_generation" && exit 0
 
+# === 记忆任务处理 ===
+process_memory_tasks() {
+    PENDING_JSON=$(curl -s "$PROXY_URL" \
+        -H 'Content-Type: application/json' \
+        -d "{\"_token\":\"$TOKEN\",\"_path\":\"/memory_pending\"}" 2>/dev/null)
+    
+    PENDING_COUNT=$(echo "$PENDING_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null)
+    [ "$PENDING_COUNT" -eq 0 ] 2>/dev/null && return 1
+    
+    # 获取 task_id 列表
+    IDS=$(echo "$PENDING_JSON" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+for tid in d.get('pending',[]): print(tid)
+" 2>/dev/null)
+    
+    [ -z "$IDS" ] && return 1
+    
+    for TID in $IDS; do
+        [ "$MAX_TASKS" -le 0 ] && break
+        ((MAX_TASKS--))
+        
+        RESULT=$(curl -s "$PROXY_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"_token\":\"$TOKEN\",\"_path\":\"/memory_process\",\"task_id\":$TID}" 2>/dev/null)
+        
+        STATUS=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null)
+        echo "$(date '+%Y-%m-%d %H:%M:%S') [memory] task=$TID status=$STATUS"
+        
+        sleep 5
+    done
+    return 0
+}
+
+process_memory_tasks
 exit 0

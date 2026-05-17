@@ -1,4 +1,180 @@
 <?php
+
+// ═══════════════════════════════════════
+// MEMORY CORE FUNCTIONS (merged)
+// ═══════════════════════════════════════
+/**
+ * memory_functions.php — CmdCode Memory System 核心函数库
+ * 
+ * 提供：加密/解密、存储、检索、配额检查等基础功能
+ * 适配 XinCache 共享主机环境
+ * 
+ * 依赖：PHP 7.4+ (openssl, pdo_mysql, mbstring)
+ */
+
+// ── MySQL 连接（懒加载） ──
+function getMemoryDB(): PDO {
+    static $pdo = null;
+    if ($pdo === null) {
+        $pdo = new PDO(
+            'mysql:host=__YOUR_MYSQL_HOST__;dbname=__YOUR_MYSQL_DB__;charset=utf8mb4',
+            '__YOUR_MYSQL_USER__',
+            '__YOUR_MYSQL_PASS__',
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_TIMEOUT => 5,
+            ]
+        );
+    }
+    return $pdo;
+}
+
+// ── 主密钥派生（基于 config.enc.php 的加密口令） ──
+function getMemoryMasterKey(): string {
+    // 使用与 config.enc.php 相同的加密口令派生记忆系统主密钥
+    $passphrase = 'd96986ae29ef0bdb2ed6c53837c6adac58e52c2d35abbf4eef00e4f9ef22b8e4';
+    return hash('sha256', $passphrase . ':memory:master', true);
+}
+
+// ── 用户级密钥派生 ──
+function deriveUserMemoryKeys(string $userId): array {
+    $masterKey = getMemoryMasterKey();
+    return [
+        'encrypt' => hash_hmac('sha256', $userId . ':memory:encrypt', $masterKey, true),
+        'hmac'    => hash_hmac('sha256', $userId . ':memory:hmac', $masterKey, true),
+    ];
+}
+
+// ── 事实加密 ──
+function encryptFact(string $plaintext, string $userId): array {
+    $keys = deriveUserMemoryKeys($userId);
+    $iv = openssl_random_pseudo_bytes(16);
+    $ciphertext = openssl_encrypt($plaintext, 'aes-256-cbc', $keys['encrypt'], OPENSSL_RAW_DATA, $iv);
+    $mac = hash_hmac('sha256', $iv . $ciphertext, $keys['hmac']);
+    return [
+        'iv'   => base64_encode($iv),
+        'data' => base64_encode($ciphertext),
+        'mac'  => $mac,
+    ];
+}
+
+// ── 事实解密 ──
+function decryptFact(array $encrypted, string $userId): string {
+    $keys = deriveUserMemoryKeys($userId);
+    $iv = base64_decode($encrypted['iv']);
+    $ciphertext = base64_decode($encrypted['data']);
+    $calculatedMac = hash_hmac('sha256', $iv . $ciphertext, $keys['hmac']);
+    if (!hash_equals($calculatedMac, $encrypted['mac'])) {
+        throw new Exception('Memory integrity check failed');
+    }
+    $plaintext = openssl_decrypt($ciphertext, 'aes-256-cbc', $keys['encrypt'], OPENSSL_RAW_DATA, $iv);
+    if ($plaintext === false) {
+        throw new Exception('Memory decryption failed');
+    }
+    return $plaintext;
+}
+
+// ── 原子文件写入 ──
+function atomicFileWrite(string $filePath, string $content): bool {
+    $tmpPath = $filePath . '.tmp.' . getmypid();
+    if (file_put_contents($tmpPath, $content, LOCK_EX) === false) return false;
+    if (!rename($tmpPath, $filePath)) { @unlink($tmpPath); return false; }
+    return true;
+}
+
+// ── 安全追加JSONL ──
+function safeAppendJSONL(string $filePath, array $record): bool {
+    $line = json_encode($record, JSON_UNESCAPED_UNICODE) . "\n";
+    if (file_put_contents($filePath, $line, FILE_APPEND | LOCK_EX) === false) {
+        return false;
+    }
+    return true;
+}
+
+// ── 目录大小计算 ──
+function dirSize(string $dir): int {
+    $size = 0;
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS)) as $file) {
+        if ($file->isFile()) $size += $file->getSize();
+    }
+    return $size;
+}
+
+// ── 获取用户记忆目录（基于现有用户目录结构） ──
+function getMemoryDir(string $userId): string {
+    $baseDir = __DIR__ . '/users/' . preg_replace('/[^a-zA-Z0-9_]/', '_', $userId);
+    $memoryDir = $baseDir . '/Memory';
+    if (!is_dir($memoryDir)) {
+        @mkdir($memoryDir, 0700, true);
+        @mkdir($memoryDir . '/L2_scenes', 0700, true);
+    }
+    return $memoryDir;
+}
+
+// ── 获取已认证用户ID ──
+function getAuthenticatedUserId(): ?string {
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
+    return $_SESSION['user'] ?? null;
+}
+
+// ── 记忆配额检查（100MB/用户） ──
+function checkMemoryQuota(string $userId, int $incomingBytes): bool {
+    $memoryDir = getMemoryDir($userId);
+    $current = 0;
+    if (is_dir($memoryDir)) $current += dirSize($memoryDir);
+    return ($current + $incomingBytes) <= (100 * 1024 * 1024);
+}
+
+// ── 获取用户总用量 ──
+function getUserTotalMemoryUsage(string $userId): int {
+    $memoryDir = getMemoryDir($userId);
+    $size = 0;
+    if (is_dir($memoryDir)) $size += dirSize($memoryDir);
+    return $size;
+}
+
+// ── 调用LLM API提取事实（简化版，使用proxy.php的curl逻辑） ──
+function callMemoryLLM(array $messages): string {
+    $apiUrl = 'https://opencode.ai/zen/go/v1/chat/completions';
+    $configPath = __DIR__ . '/config.enc.php';
+    if (!file_exists($configPath)) return '{}';
+    
+    $PROVIDERS = include $configPath;
+    $keys = $PROVIDERS['opencode-go']['keys'] ?? [];
+    if (empty($keys) || empty($keys[0])) return '{}';
+    
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $apiUrl,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $keys[0],
+        ],
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode([
+            'model' => 'deepseek-v4-flash',
+            'messages' => $messages,
+            'temperature' => 0.3,
+            'max_tokens' => 4096,
+        ]),
+        CURLOPT_SSL_VERIFYPEER => false,
+    ]);
+    
+    $response = curl_exec($ch);
+    $error = curl_error($ch);
+    curl_close($ch);
+    
+    if ($error) return '{}';
+    $data = json_decode($response, true);
+    return $data['choices'][0]['message']['content'] ?? '{}';
+}
+
 /**
  * CmdCode Multi-Provider API Proxy
  * 
@@ -173,7 +349,7 @@ function getUserUsage($username) {
     return $total;
 }
 define('QUOTA_BYTES', 100 * 1024 * 1024); // 100MB
-define('ACCESS_TOKEN', '__YOUR_ACCESS_TOKEN_HERE__'); // 前端访问令牌
+define('ACCESS_TOKEN', '__YOUR_PROXY_ACCESS_TOKEN__'); // 前端访问令牌
 define('GUEST_QUOTA_BYTES', 1 * 1024 * 1024 * 1024); // 1GB shared for all guests
 
 // 安全辅助函数：获取当前有效用户目录（登录用户→个人文件夹，访客→共享 guest/ 文件夹）
@@ -202,7 +378,7 @@ function getUserUsageSafe() {
 
 // 用户系统动作路由（优先级高于 API 代理）
 $action = $input['_action'] ?? $_GET['_action'] ?? '';
-if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash'])) {
+if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash','memory'])) {
     session_start();
     // ─── 全域 Token 认证（排除无需 token 的动作） ───
     $exemptActions = ['register','login','session','get_proxy_token'];
@@ -254,7 +430,7 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             exit;
 
         case 'get_proxy_token':
-            echo json_encode(['token' => '__YOUR_ACCESS_TOKEN_HERE__']);
+            echo json_encode(['token' => '__YOUR_PROXY_TOKEN__']);
             exit;
 
         case 'quota':
@@ -500,6 +676,206 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             if (strlen($result['stdout']) > $maxOutput) $result['stdout'] = substr($result['stdout'],0,$maxOutput)."\n\n... (输出已截断)";
             if (strlen($result['stderr']) > $maxOutput) $result['stderr'] = substr($result['stderr'],0,$maxOutput)."\n\n... (输出已截断)";
             echo json_encode(['success'=>true,'command'=>$cmd,'stdout'=>$result['stdout'],'stderr'=>$result['stderr'],'exitCode'=>$result['exitCode']]);
+            exit;
+        case 'memory':
+            // ═══════════════════════════════════════
+            // 记忆系统 — 多级记忆存储/检索
+            // ═══════════════════════════════════════
+            header('Content-Type: application/json');
+            
+            $userId = getAuthenticatedUserId();
+            if (!$userId) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Authentication required']);
+                exit;
+            }
+            
+            $memoryDir = getMemoryDir($userId);
+            
+            $sub = $_GET['sub_action'] ?? $input['sub_action'] ?? 'search';
+            $data = $input;
+            
+            switch ($sub) {
+                case 'enqueue_extract':
+                    // 入队记忆提取任务
+                    if (empty($data['messages'])) {
+                        echo json_encode(['error' => 'Missing messages']);
+                        break;
+                    }
+                    $estimatedSize = strlen(json_encode($data['messages'])) * 0.1;
+                    if (!checkMemoryQuota($userId, (int)$estimatedSize)) {
+                        http_response_code(507);
+                        echo json_encode(['error' => 'Storage quota exceeded']);
+                        break;
+                    }
+                    $pdo = getMemoryDB();
+                    $stmt = $pdo->prepare("INSERT INTO memory_tasks (user_id, task_type, payload) VALUES (?, 'extract_facts', ?)");
+                    $stmt->execute([$userId, json_encode([
+                        'messages' => $data['messages'],
+                        'scene_id' => $data['scene_id'] ?? 'scene_default'
+                    ])]);
+                    echo json_encode(['status' => 'queued', 'task_id' => $pdo->lastInsertId()]);
+                    break;
+                    
+                case 'search':
+                    $query = $_GET['query'] ?? $data['query'] ?? '';
+                    $sceneId = $_GET['scene_id'] ?? $data['scene_id'] ?? '';
+                    $limit = min((int)($_GET['limit'] ?? $data['limit'] ?? 10), 50);
+                    $pdo = getMemoryDB();
+                    
+                    // 构建查询
+                    $factsFilePath = $memoryDir . '/L1_facts.jsonl';
+                    $results = [];
+                    
+                    if ($query) {
+                        // 使用 MySQL FULLTEXT 搜索
+                        $stmt = $pdo->prepare(
+                            "SELECT fact_id, fact_preview, category, importance, access_count, 
+                             MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) as text_score 
+                             FROM memory_index 
+                             WHERE user_id=:uid AND MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) > 0 
+                             ORDER BY text_score DESC, importance DESC, access_count DESC 
+                             LIMIT :lim"
+                        );
+                        $stmt->bindValue('q', $query, PDO::PARAM_STR);
+                        $stmt->bindValue('uid', $userId, PDO::PARAM_STR);
+                        $stmt->bindValue('lim', $limit, PDO::PARAM_INT);
+                        $stmt->execute();
+                        $candidates = $stmt->fetchAll();
+                    } elseif ($sceneId) {
+                        // 按场景筛选
+                        $stmt = $pdo->prepare(
+                            "SELECT id, fact_id, fact_preview, category, importance 
+                             FROM memory_index 
+                             WHERE user_id=:uid AND l2_scene_id=:scene_id 
+                             ORDER BY importance DESC, created_at DESC 
+                             LIMIT :lim"
+                        );
+                        $stmt->bindValue('uid', $userId, PDO::PARAM_STR);
+                        $stmt->bindValue('scene_id', $sceneId, PDO::PARAM_STR);
+                        $stmt->bindValue('lim', $limit, PDO::PARAM_INT);
+                        $stmt->execute();
+                        $candidates = $stmt->fetchAll();
+                    } else {
+                        // 最近记忆
+                        $stmt = $pdo->prepare(
+                            "SELECT id, fact_id, fact_preview, category, importance 
+                             FROM memory_index 
+                             WHERE user_id=:uid 
+                             ORDER BY last_accessed_at DESC, importance DESC 
+                             LIMIT :lim"
+                        );
+                        $stmt->bindValue('uid', $userId, PDO::PARAM_STR);
+                        $stmt->bindValue('lim', $limit, PDO::PARAM_INT);
+                        $stmt->execute();
+                        $candidates = $stmt->fetchAll();
+                    }
+                    
+                    // 从 JSONL 解密获取完整内容
+                    if (file_exists($factsFilePath)) {
+                        $lines = file($factsFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+                        $factMap = [];
+                        foreach ($lines as $line) {
+                            $rec = json_decode($line, true);
+                            if ($rec) $factMap[$rec['id']] = $rec;
+                        }
+                        foreach ($candidates as $c) {
+                            $fid = $c['fact_id'];
+                            if (isset($factMap[$fid])) {
+                                try {
+                                    $decrypted = decryptFact($factMap[$fid]['encrypted'], $userId);
+                                    $results[] = [
+                                        'id' => $fid,
+                                        'fact' => $decrypted,
+                                        'category' => $c['category'],
+                                        'importance' => $c['importance'],
+                                        'preview' => $c['fact_preview'],
+                                        'scene_id' => $factMap[$fid]['l2_scene_id'] ?? null,
+                                    ];
+                                } catch (Exception $e) {}
+                            }
+                        }
+                    }
+                    
+                    // 更新访问计数
+                    if (!empty($candidates)) {
+                        $ids = array_column($candidates, 'id');
+                        $ph = implode(',', array_fill(0, count($ids), '?'));
+                        $pdo->prepare("UPDATE memory_index SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id IN ($ph)")->execute($ids);
+                    }
+                    
+                    echo json_encode(['facts' => $results, 'count' => count($results)]);
+                    break;
+                    
+                case 'get_persona':
+                    $personaFile = $memoryDir . '/L3_persona.json';
+                    if (file_exists($personaFile)) {
+                        readfile($personaFile);
+                    } else {
+                        echo json_encode(['traits' => '', 'message' => 'No persona yet']);
+                    }
+                    break;
+                    
+                case 'get_scene':
+                    $sceneId = $_GET['scene_id'] ?? $data['scene_id'] ?? 'scene_default';
+                    $sceneFile = $memoryDir . "/L2_scenes/{$sceneId}.json";
+                    if (file_exists($sceneFile)) {
+                        readfile($sceneFile);
+                    } else {
+                        echo json_encode(['error' => 'Scene not found']);
+                    }
+                    break;
+                    
+                case 'switch_scene':
+                    $sceneName = $data['name'] ?? 'Default';
+                    $sceneIndexPath = $memoryDir . '/L2_scenes/scene_index.json';
+                    $sceneIndex = file_exists($sceneIndexPath) ? json_decode(file_get_contents($sceneIndexPath), true) : ['active_scene_id' => 'scene_default', 'scenes' => []];
+                    $existing = null;
+                    foreach ($sceneIndex['scenes'] as $sc) {
+                        if ($sc['name'] === $sceneName) { $existing = $sc; break; }
+                    }
+                    if ($existing && ($data['switch_to_existing'] ?? true)) {
+                        $sceneIndex['active_scene_id'] = $existing['id'];
+                        file_put_contents($sceneIndexPath, json_encode($sceneIndex));
+                        echo json_encode(['scene_id' => $existing['id'], 'name' => $sceneName, 'is_new' => false]);
+                    } else {
+                        $sceneId = 'scene_' . time();
+                        $sceneData = ['id' => $sceneId, 'name' => $sceneName, 'summary' => '', 'context' => '', 'memory_ids' => [], 'memory_count' => 0, 'created_at' => date('Y-m-d H:i:s'), 'updated_at' => date('Y-m-d H:i:s')];
+                        file_put_contents($memoryDir . "/L2_scenes/{$sceneId}.json", json_encode($sceneData));
+                        $sceneIndex['active_scene_id'] = $sceneId;
+                        $sceneIndex['scenes'][] = ['id' => $sceneId, 'name' => $sceneName, 'memory_count' => 0, 'last_active' => date('Y-m-d H:i:s')];
+                        file_put_contents($sceneIndexPath, json_encode($sceneIndex));
+                        echo json_encode(['scene_id' => $sceneId, 'name' => $sceneName, 'is_new' => true]);
+                    }
+                    break;
+                    
+                case 'update_scene_summary':
+                    $sceneId = $data['scene_id'] ?? 'scene_default';
+                    $summary = $data['summary'] ?? '';
+                    $sceneFile = $memoryDir . "/L2_scenes/{$sceneId}.json";
+                    if (file_exists($sceneFile)) {
+                        $sceneData = json_decode(file_get_contents($sceneFile), true);
+                        $sceneData['summary'] = $summary;
+                        $sceneData['updated_at'] = date('Y-m-d H:i:s');
+                        file_put_contents($sceneFile, json_encode($sceneData));
+                        echo json_encode(['status' => 'updated']);
+                    } else {
+                        echo json_encode(['error' => 'Scene not found']);
+                    }
+                    break;
+                    
+                case 'get_all_scenes':
+                    $sceneIndexPath = $memoryDir . '/L2_scenes/scene_index.json';
+                    if (file_exists($sceneIndexPath)) {
+                        readfile($sceneIndexPath);
+                    } else {
+                        echo json_encode([]);
+                    }
+                    break;
+                    
+                default:
+                    echo json_encode(['error' => 'Unknown sub_action']);
+            }
             exit;
     }
     exit;
@@ -780,7 +1156,7 @@ if ($api_path === '/music_write_result') {
 if ($api_path === '/music_get_provider') {
     header('Content-Type: application/json');
     // IP 限制：只允许本机 Hermes 服务器调用
-    $allowedIPs = ['156.227.27.58', '127.0.0.1'];
+    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
     $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
     if (!in_array($remoteIP, $allowedIPs)) {
         http_response_code(403);
@@ -796,6 +1172,313 @@ if ($api_path === '/music_get_provider') {
         'base_url' => $provider['base_url'],
         'keys' => $provider['keys'],
     ]);
+    exit;
+}
+
+
+// ═══════════════════════════════════════
+// MEMORY WORKER FUNCTIONS (merged)
+// ═══════════════════════════════════════
+function processExtractFacts(string $userId, array $payload, string $memoryDir, PDO $pdo): void {
+    $messages = $payload['messages'] ?? [];
+    $sceneId = $payload['scene_id'] ?? 'scene_default';
+    if (empty($messages)) return;
+    
+    // 只取前5条消息（避免长对话超时）
+    $sampleMessages = array_slice($messages, 0, 5);
+    
+    // 构造提取 prompt
+    $prompt = "从以下对话中提取原子级事实（即客观的、独立的知识点）。";
+    $prompt .= "请以 JSON 格式输出，key 为 'facts'，值为对象数组，每个对象包含 'fact'(字符串)、'category'(字符串, 可选: credential/decision/constraint/preference/event/knowledge/contact)、'importance'(1-10整数)。";
+    $prompt .= "\n\n对话内容:\n" . json_encode($sampleMessages, JSON_UNESCAPED_UNICODE);
+    
+    $response = callMemoryLLM([
+        ['role' => 'user', 'content' => $prompt]
+    ]);
+    
+    $result = json_decode($response, true);
+    $facts = $result['facts'] ?? [];
+    if (empty($facts)) {
+        // 如果LLM返回为空，尝试从非JSON格式提取
+        return;
+    }
+    
+    $factsFilePath = $memoryDir . '/L1_facts.jsonl';
+    $stored = 0;
+    
+    foreach ($facts as $fact) {
+        $factText = is_array($fact) ? ($fact['fact'] ?? '') : $fact;
+        if (empty($factText) || strlen($factText) < 5) continue;
+        
+        $hash = md5($factText);
+        $stmt = $pdo->prepare("SELECT id FROM memory_index WHERE user_id=? AND fact_hash=?");
+        $stmt->execute([$userId, $hash]);
+        if ($stmt->fetch()) continue; // 去重
+        
+        $encrypted = encryptFact($factText, $userId);
+        $factId = 'fact_' . date('Ymd') . '_' . str_pad(++$stored, 3, '0', STR_PAD_LEFT);
+        $category = is_array($fact) ? ($fact['category'] ?? 'knowledge') : 'knowledge';
+        $importance = is_array($fact) ? (int)($fact['importance'] ?? 5) : 5;
+        
+        $record = [
+            'id' => $factId,
+            'hash' => $hash,
+            'category' => $category,
+            'importance' => $importance,
+            'l2_scene_id' => $sceneId,
+            'encrypted' => $encrypted,
+            'created_at' => date('Y-m-d H:i:s'),
+        ];
+        
+        if (!safeAppendJSONL($factsFilePath, $record)) continue;
+        
+        $preview = mb_substr($factText, 0, 255);
+        $stmt = $pdo->prepare(
+            "INSERT INTO memory_index (user_id, fact_id, fact_hash, fact_preview, category, l2_scene_id, importance) 
+             VALUES (?,?,?,?,?,?,?)"
+        );
+        $stmt->execute([$userId, $factId, $hash, $preview, $category, $sceneId, $importance]);
+    }
+    
+    // 更新场景记忆计数
+    $sceneFile = $memoryDir . "/L2_scenes/{$sceneId}.json";
+    if (file_exists($sceneFile)) {
+        $sceneData = json_decode(file_get_contents($sceneFile), true);
+        $sceneData['memory_count'] = ($sceneData['memory_count'] ?? 0) + $stored;
+        $sceneData['updated_at'] = date('Y-m-d H:i:s');
+        file_put_contents($sceneFile, json_encode($sceneData));
+    }
+    
+    // 检查是否需要触发画像更新（每30条新事实更新一次）
+    $stmt = $pdo->query("SELECT COUNT(*) FROM memory_index WHERE user_id='" . $pdo->quote($userId) . "'");
+    $total = (int)$stmt->fetchColumn();
+    $personaFile = $memoryDir . '/L3_persona.json';
+    $currentCount = 0;
+    if (file_exists($personaFile)) {
+        $pdata = json_decode(file_get_contents($personaFile), true);
+        $currentCount = (int)($pdata['fact_count'] ?? 0);
+    }
+    if ($total - $currentCount >= 30) {
+        $stmt = $pdo->prepare("INSERT INTO memory_tasks (user_id, task_type) VALUES (?, 'update_persona')");
+        $stmt->execute([$userId]);
+    }
+}
+
+/**
+ * 更新用户画像
+ */
+function processUpdatePersona(string $userId, string $memoryDir, PDO $pdo): void {
+    $factsFile = $memoryDir . '/L1_facts.jsonl';
+    if (!file_exists($factsFile)) return;
+    
+    $lines = file($factsFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $recentFacts = [];
+    for ($i = count($lines) - 1; $i >= 0 && count($recentFacts) < 100; $i--) {
+        $rec = json_decode($lines[$i], true);
+        if ($rec) {
+            try {
+                $recentFacts[] = decryptFact($rec['encrypted'], $userId);
+            } catch (Exception $e) {}
+        }
+    }
+    
+    $personaFile = $memoryDir . '/L3_persona.json';
+    $existingTraits = '';
+    if (file_exists($personaFile)) {
+        $existing = json_decode(file_get_contents($personaFile), true);
+        $existingTraits = $existing['traits'] ?? '';
+    }
+    
+    $prompt = "基于以下用户回忆生成/更新用户画像。";
+    $prompt .= "输出 JSON，包含 'traits'（性格特征描述）和 'structured'（结构化标签数组）。";
+    $prompt .= "\n\n现有画像: {$existingTraits}";
+    $prompt .= "\n\n近期事实:\n" . implode("\n", $recentFacts);
+    
+    $response = callMemoryLLM([
+        ['role' => 'user', 'content' => $prompt]
+    ]);
+    
+    $persona = json_decode($response, true);
+    $personaData = [
+        'user_id' => $userId,
+        'traits' => $persona['traits'] ?? $existingTraits,
+        'structured' => $persona['structured'] ?? [],
+        'last_scene_id' => 'scene_default',
+        'fact_count' => count($lines),
+        'updated_at' => date('Y-m-d H:i:s'),
+    ];
+    file_put_contents($personaFile, json_encode($personaData, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+}
+
+/**
+ * 搜索记忆（可直接调用）
+ */
+function searchMemories(string $userId, string $query, PDO $pdo, string $memoryDir, int $topN = 10): array {
+    if (empty($query)) return [];
+    
+    $k = 60;
+    $stmt = $pdo->prepare(
+        "SELECT id, fact_id, fact_preview, category, importance, access_count, 
+         UNIX_TIMESTAMP(created_at) as created_ts,
+         MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) as text_score 
+         FROM memory_index 
+         WHERE user_id=:uid AND MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) > 0 
+         ORDER BY text_score DESC 
+         LIMIT 100"
+    );
+    $stmt->execute(['q' => $query, 'uid' => $userId]);
+    $candidates = $stmt->fetchAll();
+    if (empty($candidates)) return [];
+    
+    // RRF 排序
+    $textRank = [];
+    foreach ($candidates as $i => $c) $textRank[$c['id']] = $i + 1;
+    
+    $lambda = log(2) / (7 * 86400);
+    $now = time();
+    $timeScores = [];
+    foreach ($candidates as $c) $timeScores[$c['id']] = exp(-$lambda * max($now - $c['created_ts'], 0));
+    arsort($timeScores);
+    $timeRank = [];
+    $pos = 1;
+    foreach (array_keys($timeScores) as $id) $timeRank[$id] = $pos++;
+    
+    usort($candidates, fn($a, $b) => $b['access_count'] <=> $a['access_count']);
+    $popRank = [];
+    foreach ($candidates as $i => $c) $popRank[$c['id']] = $i + 1;
+    
+    $weights = ['credential' => 0.8, 'decision' => 1.2, 'constraint' => 1.3, 'preference' => 1.0, 'event' => 0.8, 'knowledge' => 0.7, 'contact' => 1.1];
+    
+    $rrfScores = [];
+    foreach ($candidates as $c) {
+        $id = $c['id'];
+        $score = 0;
+        if (isset($textRank[$id])) $score += 1 / ($k + $textRank[$id]);
+        if (isset($timeRank[$id])) $score += 1 / ($k + $timeRank[$id]);
+        if (isset($popRank[$id])) $score += 1 / ($k + $popRank[$id]);
+        $catWeight = $weights[$c['category']] ?? 1.0;
+        $score *= $catWeight;
+        $rrfScores[$id] = ['score' => $score, 'fact_id' => $c['fact_id'], 'category' => $c['category'], 'importance' => $c['importance']];
+    }
+    uasort($rrfScores, fn($a, $b) => $b['score'] <=> $a['score']);
+    $top = array_slice($rrfScores, 0, $topN, true);
+    
+    // 从 JSONL 解密获取完整内容
+    $factsFilePath = $memoryDir . '/L1_facts.jsonl';
+    $results = [];
+    if (file_exists($factsFilePath)) {
+        $lines = file($factsFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $factMap = [];
+        foreach ($lines as $line) {
+            $rec = json_decode($line, true);
+            if ($rec) $factMap[$rec['id']] = $rec;
+        }
+        foreach ($top as $indexId => $rd) {
+            $fid = $rd['fact_id'];
+            if (isset($factMap[$fid])) {
+                try {
+                    $decrypted = decryptFact($factMap[$fid]['encrypted'], $userId);
+                    $results[] = [
+                        'id' => $fid,
+                        'fact' => $decrypted,
+                        'category' => $rd['category'],
+                        'importance' => $rd['importance'],
+                        'rrf_score' => round($rd['score'], 4),
+                        'scene_id' => $factMap[$fid]['l2_scene_id'] ?? null,
+                    ];
+                } catch (Exception $e) {}
+            }
+        }
+    }
+    
+    // 更新访问计数
+    if (!empty($top)) {
+        $ids = array_keys($top);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $pdo->prepare("UPDATE memory_index SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id IN ($placeholders)")->execute($ids);
+    }
+    
+    return $results;
+}
+// ═══════════════════════════════════════
+// ⑧ 记忆系统后台任务处理（Hermes Cron 驱动）
+// ═══════════════════════════════════════
+
+// 列出待处理记忆任务（仅限内部服务器调用 + 有效 token）
+if ($api_path === '/memory_pending') {
+    header('Content-Type: application/json');
+    // 支持两种认证方式：内部IP白名单 或 有效AccessToken
+    $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
+    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
+    if (!in_array($remoteIP, $allowedIPs) && $token !== ACCESS_TOKEN) {
+        http_response_code(403);
+        echo json_encode(['error' => 'forbidden']);
+        exit;
+    }
+    
+    $pdo = getMemoryDB();
+    $stmt = $pdo->query("SELECT id FROM memory_tasks WHERE status='pending' ORDER BY created_at ASC LIMIT 10");
+    $pending = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    echo json_encode(['pending' => $pending, 'count' => count($pending)]);
+    exit;
+}
+
+// 处理一个记忆任务（仅限内部服务器调用 + 有效 token）
+if ($api_path === '/memory_process') {
+    header('Content-Type: application/json');
+    $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
+    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
+    if (!in_array($remoteIP, $allowedIPs) && $token !== ACCESS_TOKEN) {
+        http_response_code(403);
+        echo json_encode(['error' => 'forbidden']);
+        exit;
+    }
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !is_numeric($taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    
+    
+    $pdo = getMemoryDB();
+    
+    $stmt = $pdo->prepare("SELECT * FROM memory_tasks WHERE id=? AND status='pending'");
+    $stmt->execute([$taskId]);
+    $task = $stmt->fetch();
+    if (!$task) {
+        echo json_encode(['error' => 'task_not_found_or_not_pending']);
+        exit;
+    }
+    
+    // 标记为处理中
+    $pdo->prepare("UPDATE memory_tasks SET status='processing', updated_at=NOW() WHERE id=?")->execute([$taskId]);
+    
+    try {
+        $payload = json_decode($task['payload'], true) ?: [];
+        $memoryDir = getMemoryDir($task['user_id']);
+        
+        if ($task['task_type'] === 'extract_facts') {
+            processExtractFacts($task['user_id'], $payload, $memoryDir, $pdo);
+        } elseif ($task['task_type'] === 'update_persona') {
+            processUpdatePersona($task['user_id'], $memoryDir, $pdo);
+        } else {
+            throw new Exception('Unknown task type: ' . $task['task_type']);
+        }
+        
+        $pdo->prepare("UPDATE memory_tasks SET status='done', updated_at=NOW() WHERE id=?")->execute([$taskId]);
+        echo json_encode(['status' => 'completed', 'task_id' => $taskId]);
+    } catch (Exception $e) {
+        $retryCount = $task['retry_count'] + 1;
+        if ($retryCount >= 3) {
+            $pdo->prepare("UPDATE memory_tasks SET status='failed', retry_count=?, error_message=? WHERE id=?")
+                ->execute([$retryCount, $e->getMessage(), $taskId]);
+            echo json_encode(['status' => 'failed', 'error' => $e->getMessage()]);
+        } else {
+            $pdo->prepare("UPDATE memory_tasks SET status='pending', retry_count=?, error_message=? WHERE id=?")
+                ->execute([$retryCount, 'Retry: ' . $e->getMessage(), $taskId]);
+            echo json_encode(['status' => 'retry', 'retry_count' => $retryCount, 'error' => $e->getMessage()]);
+        }
+    }
     exit;
 }
 
