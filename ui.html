@@ -445,6 +445,12 @@ let recentConversationMessages=[]; // 用于记忆系统提取
 let lastExtractionIndex=0; // 已提取的消息索引位置
 const MEMORY_EXTRACTION_INTERVAL=10*60*1000; // 定时提取间隔（10分钟）
 let memoryExtractionTimer=null;
+let _videoQuotaExhausted=false; // 会话级：所有视频 Key 配额已耗尽，阻止重复调用
+let _musicQuotaExhausted=false; // 会话级：所有音乐 Key 配额已耗尽，阻止重复调用
+let _imageQuotaExhausted=false;
+let _ttsQuotaExhausted=false;
+let _visionQuotaExhausted=false;
+let _webSearchQuotaExhausted=false;
 
 function getUnprocessedMessages(){
   return recentConversationMessages.slice(lastExtractionIndex);
@@ -746,7 +752,7 @@ const ALL_TOOLS=[
   {type:'function',function:{name:'web_search',description:'搜索互联网，返回结构化结果列表。',parameters:{type:'object',properties:{query:{type:'string',description:'搜索关键词'}},required:['query']}}},
   {type:'function',function:{name:'vision_recognition',description:'识别图片内容，回答关于图片的问题。',parameters:{type:'object',properties:{image_url:{type:'string',description:'图片URL'},question:{type:'string',description:'要询问的问题'}},required:['image_url']}}},
   {type:'function',function:{name:'image_generation',description:'根据文字描述生成图片，返回图片URL列表。支持自定义分辨率、种子、参考图等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3'],default:'1:1'},n:{type:'integer',description:'生成数量1-4',default:1},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
-  {type:'function',function:{name:'video_generation',description:'根据描述生成视频，支持文生视频、图生视频、首尾帧插帧（SEF）、主体参考（S2V）等多种模式。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述'},first_frame_image:{type:'string',description:'首帧图片URL（图生视频）'},last_frame_image:{type:'string',description:'尾帧图片URL（与first_frame_image配合启用SEF插帧模式，使用Hailuo-02模型）'},subject_image:{type:'string',description:'主体参考图URL（角色一致性，启用S2V-01模型）'},duration:{type:'integer',enum:[5,6,10],default:6},resolution:{type:'string',enum:['720P','1080P'],default:'720P'}},required:['prompt']}}},
+  {type:'function',function:{name:'video_generation',description:'根据描述生成视频。T2V文生视频(Hailuo-2.3)、I2V图生视频(Hailuo-2.3)、SEF首尾帧插帧(Hailuo-02)、S2V主体参考(S2V-01)。参考 mmx-cli 参数模型。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述'},first_frame_image:{type:'string',description:'首帧图片URL（图生视频I2V模式）'},last_frame_image:{type:'string',description:'尾帧图片URL（与first_frame_image配合→Hailuo-02 SEF插帧）'},subject_image:{type:'string',description:'主体参考图URL（角色一致性→S2V-01模型）'}},required:['prompt']}}},
   {type:'function',function:{name:'music_generation',description:'生成音乐或歌曲，返回音频URL。支持精细控制：曲风、情绪、乐器、速度、调性等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（如：轻快爵士风格，夏天的海边）'},lyrics:{type:'string',description:'歌词（可选，不填则纯音乐）'},instrumental:{type:'boolean',description:'纯音乐（无歌词，与lyrics互斥）',default:false},lyrics_optimizer:{type:'boolean',description:'自动生成歌词（与lyrics/instrumental互斥）',default:false},genre:{type:'string',description:'曲风（如：folk, pop, jazz, rock, classical, electronic, rnb, hiphop）'},mood:{type:'string',description:'情绪/氛围（如：warm, melancholic, uplifting, dark, dreamy）'},vocals:{type:'string',description:'人声风格（如：warm male baritone, bright female soprano）'},instruments:{type:'string',description:'主要乐器（如：acoustic guitar, piano, strings）'},tempo:{type:'string',description:'速度描述（如：fast, slow, moderate）'},bpm:{type:'integer',description:'精确BPM数值（如95, 120）'},key:{type:'string',description:'调性（如：C major, A minor）'}},required:['prompt']}}},
   {type:'function',function:{name:'text_to_speech',description:'将文本转为语音，返回音频URL。可选音色：female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), male-qn-qingse(青年男声), female-tianmei(甜美)等。',parameters:{type:'object',properties:{text:{type:'string',description:'要读出的文本'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',minimum:0.5,maximum:2.0,default:1.0},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
   {type:'function',function:{name:'bash',description:'在服务器上执行 Shell 命令（真实执行，支持curl、git等）。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令'}},required:['command']}}},
@@ -775,18 +781,32 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=90000){
 // ── Tool Handlers ──
 const toolHandlers={
   async web_search(args,ctx){
+    if(_webSearchQuotaExhausted)return '网络搜索暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
     const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'system',content:'你是一个搜索助手。以JSON格式返回：{"results":[{"title":"标题","url":"链接","snippet":"摘要"}]}。不要使用工具调用，直接返回JSON。'},{role:'user',content:args.query}],temperature:.3,max_tokens:2048});
     let content=data.choices?.[0]?.message?.content||'';
     content=content.replace(/<thinking>[\s\S]*?<\/thinking>/g,'').trim();
-    const jsonMatch=content.match(/\{[\s\S]*"results"[\s\S]*\}/);
+    const jsonMatch=content.match(/\{[^]*"results"[^]*\}/);
     if(jsonMatch)return JSON.stringify(JSON.parse(jsonMatch[0]).results,null,2);
     return content;
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_webSearchQuotaExhausted=true;return '网络搜索失败，所有 API Key 配额已用尽';}return '搜索出错: '+e.message;}
   },
   async vision_recognition(args,ctx){
-    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'user',content:[{type:'text',text:args.question||'这张图片里有什么？'},{type:'image_url',image_url:{url:args.image_url}}]}],max_tokens:1024});
+    // 通过服务器代理下载图片（解决 MiniMax 无法访问站内/私有 URL 的问题）
+    if(_visionQuotaExhausted)return '图像识别暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    let imgUrl=args.image_url;
+    try{
+      const proxyImg=await apiCall('image_proxy',{url:args.image_url});
+      if(proxyImg.success&&proxyImg.data_url)imgUrl=proxyImg.data_url;
+    }catch(e){/* 回退：直接用原始 URL */}
+    try{
+    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'user',content:[{type:'text',text:args.question||'这张图片里有什么？'},{type:'image_url',image_url:{url:imgUrl}}]}],max_tokens:1024});
     return data.choices?.[0]?.message?.content||'无识别结果';
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_visionQuotaExhausted=true;return '图像识别失败，所有 API Key 配额已用尽';}return '图像识别出错: '+e.message;}
   },
   async image_generation(args,ctx){
+    if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
     const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:args.aspect_ratio||'1:1',n:args.n||1,response_format:'url'};if(args.seed)imgBody.seed=args.seed;if(args.prompt_optimizer)imgBody.prompt_optimizer=true;if(args.width&&args.height){imgBody.width=args.width;imgBody.height=args.height;delete imgBody.aspect_ratio;}if(args.aigc_watermark)imgBody.aigc_watermark=true;const data=await proxyRequest('minimax','/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
     const urls=data.data?.image_urls||[];
     const failed=data.data?.failed_count||0;
@@ -795,23 +815,41 @@ const toolHandlers={
     if(failed>0)addStepMessage('⚠️ '+failed+'张图片生成失败');
     for(const url of urls){const f=await saveMediaToUser(url,'images','jpg');if(f)addAgentMessage('📁 已保存: '+f,'image');}
     return JSON.stringify(urls);
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_imageQuotaExhausted=true;return '图片生成失败，所有 API Key 配额已用尽';}return '图片生成出错: '+e.message;}
   },
   async video_generation(args,ctx){
-    addStepMessage('开始生成视频，预计需要1-2分钟...');
-    const vidBody={model:args.first_frame_image?'MiniMax-Hailuo-2.3-Fast':'MiniMax-Hailuo-2.3',prompt:args.prompt,duration:args.duration||6,resolution:args.resolution||'720P'};if(args.first_frame_image)vidBody.first_frame_image=args.first_frame_image;if(args.last_frame_image){vidBody.last_frame_image=args.last_frame_image;vidBody.model='MiniMax-Hailuo-02';}if(args.subject_image){vidBody.subject_reference=[{type:'character',image:[args.subject_image]}];vidBody.model='S2V-01';}
-    // Step 1: 异步提交（立即返回 task_id，后台 cron worker 慢慢处理，避免 nginx 504）
+    // 会话级配额耗尽保护：阻止 AI 在配额恢复前重复调用
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    addStepMessage('🎬 开始生成视频（T2V文生视频/Hailuo-2.3），预计1-2分钟...');
+    // 按 mmx-cli 参数模型构建请求体：仅含 MiniMax API 支持的字段
+    const vidBody={model:'MiniMax-Hailuo-2.3',prompt:args.prompt};
+    if(args.first_frame_image)vidBody.first_frame_image=args.first_frame_image;
+    if(args.last_frame_image&&args.first_frame_image){vidBody.last_frame_image=args.last_frame_image;vidBody.model='MiniMax-Hailuo-02';}
+    if(args.subject_image){vidBody.subject_reference=[{type:'character',image:[args.subject_image]}];vidBody.model='S2V-01';}
+    addStepMessage('🎬 已提交视频任务，等待生成...');
+    // 当所有 Key 耗尽时自动重试（最多 2 次）
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+    // Step 1: 异步提交
     const createResp=await proxyRequest('minimax','/video_submit',vidBody,30000);
+    if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交...');await new Promise(r=>setTimeout(r,5000));continue;}
     if(createResp.error)return '视频生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;if(!taskId)return '视频生成失败：未获取到任务ID';
-    // Step 2: 轮询等待结果（最多等 2 分钟，指数退避 3s→10s）
-    const start=Date.now();const MAX_WAIT=120000;let delay=3000;let lastResp=null;
+    // Step 2: 轮询等待结果（最多等 3 分钟，指数退避 3s→10s, 与音乐生成一致）
+    const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
     while(Date.now()-start<MAX_WAIT){
       await new Promise(r=>setTimeout(r,delay));if(stopRequested)return '操作已取消';
       const pollResp=await proxyRequest('minimax','/video_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
       lastResp=pollResp;break;
     }
-    if(!lastResp)return '视频生成超时，请稍后重试';
+    if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await new Promise(r=>setTimeout(r,3000));continue;}return '视频生成超时，请稍后重试';}
+    // Key 全部耗尽？自动重试提交
+    if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+      _videoQuotaExhausted=true;
+      if(retry<2){addStepMessage('🔄 Key 配额耗尽，重新提交（第'+(retry+1)+'次重试）...');await new Promise(r=>setTimeout(r,5000));continue;}
+      return '视频生成失败，所有 API Key 配额已用尽，已自动禁止后续调用。请在午夜 UTC+8 后刷新页面重试'+(lastResp.message?': '+lastResp.message:'');
+    }
     if(lastResp.error)return '视频生成失败: '+(lastResp.message||lastResp.error);
     const br_v=lastResp.base_resp||{};
     if(br_v.status_code&&br_v.status_code!==0)return '视频生成失败: '+(br_v.status_msg||'错误码 '+br_v.status_code);
@@ -819,8 +857,11 @@ const toolHandlers={
     if(!url&&lastResp.file_id){try{const fi=await proxyRequest('minimax','/files/retrieve?file_id='+lastResp.file_id,{});url=fi.file?.download_url||fi.download_url||'';}catch(e){}}
     if(url){const f=await saveMediaToUser(url,'videos','mp4');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
     return '视频生成完成但无URL'+(lastResp._http_code?' (HTTP '+lastResp._http_code+')':'');
+    } // end retry loop
+    return '视频生成失败，多次重试后未获取到有效结果';
   },
   async music_generation(args,ctx){
+    if(_musicQuotaExhausted)return '音乐生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     try{
     // 官方 SDK 做法：genre/mood/vocals 等结构化参数折叠进 prompt
     const structured=[];
@@ -853,7 +894,10 @@ const toolHandlers={
       break;
     }
     if(!lastResp)return '音乐生成超时（3分钟），请稍后重试';
-    if(lastResp.error)return '音乐生成失败: '+(lastResp.message||lastResp.error);
+    if(lastResp.error){
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){_musicQuotaExhausted=true;return '音乐生成失败，所有 API Key 配额已用尽';}
+      return '音乐生成失败: '+(lastResp.message||lastResp.error);
+    }
     const br_m=lastResp.base_resp||{};
     if(br_m.status_code&&br_m.status_code!==0)return '音乐生成失败: '+(br_m.status_msg||'错误码 '+br_m.status_code);
     const url=lastResp.audio_url||lastResp.data?.audio_url||lastResp.data?.audio||'';
@@ -862,6 +906,7 @@ const toolHandlers={
     }catch(e){if(e.name==='AbortError')throw e;return '音乐生成出错: '+e.message;}
   },
   async text_to_speech(args,ctx){
+    if(_ttsQuotaExhausted)return '语音生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     try{
       const data=await proxyRequest('minimax','/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:args.speed||1.0},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
       const baseResp=data.base_resp||{};
@@ -872,7 +917,7 @@ const toolHandlers={
       const url=data.audio_url||data.data?.audio_url||data.data?.audio||'';
       if(url){const f=await saveMediaToUser(url,'voice','mp3');if(f){addAgentMessage('📁 已保存: '+f,'voice');const su=await getShareUrl(f);if(su)return su;}return url;}
       return '语音生成完成但未获取到音频URL，API响应结构: '+JSON.stringify(data).slice(0,300);
-    }catch(e){if(e.name==='AbortError')throw e;return '语音生成出错: '+e.message;}
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_ttsQuotaExhausted=true;return '语音生成失败，所有 API Key 配额已用尽';}return '语音生成出错: '+e.message;}
   },
   async bash(args,ctx){
     try{

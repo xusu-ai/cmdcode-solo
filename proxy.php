@@ -350,7 +350,7 @@ function getUserUsage($username) {
 }
 define('QUOTA_BYTES', 1024 * 1024 * 1024); // 1GB (admin)
 define('REGULAR_QUOTA_BYTES', 100 * 1024 * 1024); // 100MB (普通用户)
-define('ACCESS_TOKEN', '__YOUR_PROXY_ACCESS_TOKEN__'); // 前端访问令牌
+define('ACCESS_TOKEN', '__YOUR_PROXY_ACCESS_TOKEN__'); // 前端访问令牌（与 cron worker 一致）
 define('GUEST_QUOTA_BYTES', 1 * 1024 * 1024 * 1024); // 1GB shared for all guests
 
 // 安全辅助函数：获取当前有效用户目录（登录用户→个人文件夹，访客→共享 guest/ 文件夹）
@@ -380,7 +380,7 @@ function getUserUsageSafe() {
 
 // 用户系统动作路由（优先级高于 API 代理）
 $action = $input['_action'] ?? $_GET['_action'] ?? '';
-if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash','memory'])) {
+if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash','memory','image_proxy'])) {
     session_start();
     // ─── 全域 Token 认证（排除无需 token 的动作） ───
     $exemptActions = ['register','login','session','get_proxy_token'];
@@ -432,7 +432,7 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             exit;
 
         case 'get_proxy_token':
-            echo json_encode(['token' => '__YOUR_PROXY_TOKEN__']);
+            echo json_encode(['token' => ACCESS_TOKEN]);
             exit;
 
         case 'quota':
@@ -549,6 +549,39 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             if (!is_dir($dir)) mkdir($dir, 0755, true);
             file_put_contents($fullPath, $content);
             echo json_encode(['success'=>true, 'file'=>$fname, 'size'=>strlen($content)]);
+            exit;
+
+        case 'image_proxy':
+            $url = $input['url'] ?? '';
+            if (!$url) { echo json_encode(['error'=>'URL不能为空']); exit; }
+            $content = @file_get_contents($url);
+            if ($content === false) {
+                // 尝试用 curl 下载（支持更多协议/hosts）
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL => $url,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_TIMEOUT => 30,
+                    CURLOPT_CONNECTTIMEOUT => 10,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_MAXREDIRS => 5,
+                    CURLOPT_SSL_VERIFYPEER => false,
+                    CURLOPT_USERAGENT => 'Mozilla/5.0',
+                ]);
+                $content = curl_exec($ch);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $error = curl_error($ch);
+                curl_close($ch);
+                if ($content === false || $httpCode >= 400) {
+                    echo json_encode(['error'=>'图片下载失败: '.($error?:("HTTP ".$httpCode))]);
+                    exit;
+                }
+            }
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mime = $finfo ? finfo_buffer($finfo, $content) : 'image/jpeg';
+            finfo_close($finfo);
+            $b64 = base64_encode($content);
+            echo json_encode(['success'=>true, 'data_url'=>'data:'.$mime.';base64,'.$b64, 'size'=>strlen($content), 'mime'=>$mime]);
             exit;
 
         case 'file_download':
@@ -1164,7 +1197,7 @@ if ($api_path === '/music_write_result') {
 if ($api_path === '/music_get_provider') {
     header('Content-Type: application/json');
     // IP 限制：只允许本机 Hermes 服务器调用
-    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
+    $allowedIPs = ['156.227.27.58'];
     $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
     if (!in_array($remoteIP, $allowedIPs)) {
         http_response_code(403);
@@ -1183,6 +1216,208 @@ if ($api_path === '/music_get_provider') {
     exit;
 }
 
+// ═══════════════════════════════════════
+// ⑧ 异步视频生成处理（与音乐生成同模式，独立任务目录）
+// ═══════════════════════════════════════
+// MiniMax 视频生成（Hailuo 2.3）耗时 60-120s，同样需绕过 PHP-FPM 30s 超时
+// 方案：proxy.php 只保存任务参数 → Hermes Cron 轮询拉取处理
+
+$VIDEO_TASK_DIR = '/vhost/tmp/video_tasks';
+
+// 视频生成提交
+if ($api_path === '/video_submit') {
+    $taskId = bin2hex(random_bytes(8));
+    if (!is_dir($VIDEO_TASK_DIR)) {
+        @mkdir($VIDEO_TASK_DIR, 0755, true);
+    }
+    file_put_contents("$VIDEO_TASK_DIR/$taskId.params", serialize($input));
+    header('Content-Type: application/json');
+    echo json_encode([
+        'task_id' => $taskId,
+        'status' => 'processing',
+        'message' => '视频生成已提交',
+    ]);
+    exit;
+}
+
+// 视频生成结果查询
+if ($api_path === '/video_poll') {
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id', 'message' => '无效的 task_id']);
+        exit;
+    }
+    $resultFile = "$VIDEO_TASK_DIR/$taskId.result";
+    header('Content-Type: application/json');
+    if (file_exists($resultFile)) {
+        $content = file_get_contents($resultFile);
+        @unlink($resultFile);
+        @unlink("$VIDEO_TASK_DIR/$taskId.params");
+        echo $content;
+    } else {
+        echo json_encode(['status' => 'pending']);
+    }
+    exit;
+}
+
+// 列出所有待处理视频任务
+if ($api_path === '/video_pending') {
+    header('Content-Type: application/json');
+    $pending = [];
+    if (is_dir($VIDEO_TASK_DIR)) {
+        foreach (glob("$VIDEO_TASK_DIR/*.params") as $paramFile) {
+            $id = basename($paramFile, '.params');
+            if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
+            if (!file_exists("$VIDEO_TASK_DIR/$id.result")) {
+                $age = time() - filemtime($paramFile);
+                if ($age < 1800) {
+                    $pending[] = $id;
+                }
+            }
+        }
+    }
+    echo json_encode(['pending' => $pending, 'count' => count($pending)]);
+    exit;
+}
+
+// 处理一个待处理视频任务
+if ($api_path === '/video_process') {
+    header('Content-Type: application/json');
+    $taskId = $_GET['task_id'] ?? $input['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $paramFile = "$VIDEO_TASK_DIR/$taskId.params";
+    if (!file_exists($paramFile)) {
+        echo json_encode(['error' => 'task_not_found']);
+        exit;
+    }
+    if (file_exists("$VIDEO_TASK_DIR/$taskId.result")) {
+        $content = file_get_contents("$VIDEO_TASK_DIR/$taskId.result");
+        echo $content;
+        exit;
+    }
+    $originalInput = unserialize(file_get_contents($paramFile));
+    if (!$originalInput || !is_array($originalInput)) {
+        file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
+            'error' => 'invalid_params', 'message' => '任务参数损坏',
+        ]));
+        echo json_encode(['status' => 'failed', 'error' => 'invalid_params']);
+        exit;
+    }
+    $video_url = $base_url . '/video_generation';
+    $last_error = '';
+    $result = null;
+    foreach ($api_keys as $idx => $key) {
+        if (empty($key)) continue;
+        // 过滤：仅保留 MiniMax API 支持的字段（model/prompt/first_frame_image/last_frame_image/subject_reference）
+        $cleanInput = array_intersect_key($originalInput, array_flip(['model','prompt','first_frame_image','last_frame_image','subject_reference']));
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $video_url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 180,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $key,
+            ],
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($cleanInput),
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_TCP_KEEPALIVE => 1,
+            CURLOPT_TCP_KEEPIDLE => 30,
+        ]);
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+        if ($error) { $last_error = $error; continue; }
+        if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+        $result = ['http_code' => $http_code, 'body' => $response];
+        break;
+    }
+    if ($result) {
+        $bodyData = json_decode($result['body'], true);
+        $output = $bodyData ?: ['raw' => $result['body']];
+        $output['_http_code'] = $result['http_code'];
+        file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
+        @unlink($paramFile);
+        echo json_encode(['status' => 'completed']);
+    } else {
+        file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
+            'error' => 'proxy_all_keys_exhausted',
+            'message' => '所有 API Key 均已耗尽: ' . $last_error,
+        ]));
+        echo json_encode(['status' => 'failed', 'error' => $last_error]);
+    }
+    exit;
+}
+
+// 读取视频任务参数
+if ($api_path === '/video_read_params') {
+    header('Content-Type: application/json');
+    $taskId = $_GET['task_id'] ?? $input['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $paramFile = "$VIDEO_TASK_DIR/$taskId.params";
+    if (!file_exists($paramFile)) {
+        echo json_encode(['error' => 'task_not_found']);
+        exit;
+    }
+    $originalInput = unserialize(file_get_contents($paramFile));
+    echo json_encode([
+        'task_id' => $taskId,
+        'params' => $originalInput,
+        'provider' => $provider_name,
+        'api_path' => '/video_generation',
+    ]);
+    exit;
+}
+
+// 写入视频任务结果
+if ($api_path === '/video_write_result') {
+    header('Content-Type: application/json');
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $resultData = $input['result'] ?? [];
+    if (empty($resultData)) {
+        echo json_encode(['error' => 'missing_result']);
+        exit;
+    }
+    file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($resultData));
+    @unlink("$VIDEO_TASK_DIR/$taskId.params");
+    echo json_encode(['status' => 'saved']);
+    exit;
+}
+
+// 获取视频供应商配置
+if ($api_path === '/video_get_provider') {
+    header('Content-Type: application/json');
+    $allowedIPs = ['156.227.27.58'];
+    $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
+    if (!in_array($remoteIP, $allowedIPs)) {
+        http_response_code(403);
+        echo json_encode(['error' => 'forbidden', 'message' => '仅允许内部服务器调用']);
+        exit;
+    }
+    if (!isset($PROVIDERS['minimax'])) {
+        echo json_encode(['error' => 'provider_not_found']);
+        exit;
+    }
+    $provider = $PROVIDERS['minimax'];
+    echo json_encode([
+        'base_url' => $provider['base_url'],
+        'keys' => $provider['keys'],
+    ]);
+    exit;
+}
 
 // ═══════════════════════════════════════
 // MEMORY WORKER FUNCTIONS (merged)
@@ -1421,7 +1656,7 @@ if ($api_path === '/memory_pending') {
     header('Content-Type: application/json');
     // 支持两种认证方式：内部IP白名单 或 有效AccessToken
     $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
-    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
+    $allowedIPs = ['156.227.27.58'];
     if (!in_array($remoteIP, $allowedIPs) && $token !== ACCESS_TOKEN) {
         http_response_code(403);
         echo json_encode(['error' => 'forbidden']);
@@ -1439,7 +1674,7 @@ if ($api_path === '/memory_pending') {
 if ($api_path === '/memory_process') {
     header('Content-Type: application/json');
     $remoteIP = $_SERVER['REMOTE_ADDR'] ?? '';
-    $allowedIPs = ['__YOUR_ALLOWED_IP__'];
+    $allowedIPs = ['156.227.27.58'];
     if (!in_array($remoteIP, $allowedIPs) && $token !== ACCESS_TOKEN) {
         http_response_code(403);
         echo json_encode(['error' => 'forbidden']);
