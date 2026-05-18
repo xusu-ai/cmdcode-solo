@@ -1,0 +1,5 @@
+# Git attributes for CmdCode Solo
+# proxy.php has real tokens in the working tree.
+# On `git add`, the clean filter auto-replaces them with placeholders.
+
+proxy.php filter=sanitize-proxy

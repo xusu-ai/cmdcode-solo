@@ -33,7 +33,7 @@ function getMemoryDB(): PDO {
 // ── 主密钥派生（基于 config.enc.php 的加密口令） ──
 function getMemoryMasterKey(): string {
     // 使用与 config.enc.php 相同的加密口令派生记忆系统主密钥
-    $passphrase = 'd96986ae29ef0bdb2ed6c53837c6adac58e52c2d35abbf4eef00e4f9ef22b8e4';
+    $passphrase = '__YOUR_ENC_PASSPHRASE__';
     return hash('sha256', $passphrase . ':memory:master', true);
 }
 
