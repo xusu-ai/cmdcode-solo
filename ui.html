@@ -1063,7 +1063,10 @@ async function runAgentLoop(userMessage){
     }
     const basePrompt=buildSystemPrompt();
     const enrichedPrompt=memoryContext?basePrompt+'\n\n[记忆上下文]\n以下是之前与该用户的对话中提取的记忆，参考这些记忆更能理解用户背景：\n'+memoryContext:basePrompt;
-    messages=[{role:'system',content:enrichedPrompt},{role:'user',content:userMessage}];
+    // 继承上次会话上下文：保存旧system prompt替换为新prompt，追加新消息
+    messages=(currentSession.messages&&currentSession.messages.length>=2)
+      ? [{role:'system',content:enrichedPrompt},...currentSession.messages.slice(1),{role:'user',content:userMessage}]
+      : [{role:'system',content:enrichedPrompt},{role:'user',content:userMessage}];
     // 记录用户消息用于后续提取
     recentConversationMessages.push({role:'user',content:userMessage,time:Date.now()});
   }
@@ -1114,7 +1117,7 @@ async function runAgentLoop(userMessage){
     const newMsgs=getUnprocessedMessages();
     if(newMsgs.length>=2)triggerMemoryExtraction(newMsgs);
   }
-  setRunning(false);currentSession.awaitingUser=false;abortController=null;
+  setRunning(false);currentSession.messages=messages;currentSession.awaitingUser=false;abortController=null;
 }
 
 // ── File Manager ──
