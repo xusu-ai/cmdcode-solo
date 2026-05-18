@@ -104,7 +104,38 @@ function dirSize(string $dir): int {
 // ── 获取用户记忆目录（基于现有用户目录结构） ──
 function getMemoryDir(string $userId): string {
     $baseDir = __DIR__ . '/users/' . preg_replace('/[^a-zA-Z0-9_]/', '_', $userId);
-    $memoryDir = $baseDir . '/Memory';
+    $memoryDir = $baseDir . '/memory';
+    $oldDir = $baseDir . '/Memory';
+    // 迁移旧版大写 Memory → 新版小写 memory
+    if (is_dir($oldDir)) {
+        if (!is_dir($memoryDir)) {
+            @rename($oldDir, $memoryDir);
+        } else {
+            // 两者都存在：将旧目录内容递归移入新目录
+            $it = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($oldDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::SELF_FIRST
+            );
+            foreach ($it as $item) {
+                $rel = substr($item->getPathname(), strlen($oldDir) + 1);
+                $target = $memoryDir . '/' . $rel;
+                if ($item->isDir()) {
+                    if (!is_dir($target)) @mkdir($target, 0700, true);
+                } else {
+                    if (!file_exists($target)) @copy($item->getPathname(), $target);
+                }
+            }
+            // 递归删除旧目录
+            $dIt = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($oldDir, RecursiveDirectoryIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($dIt as $item) {
+                $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+            }
+            @rmdir($oldDir);
+        }
+    }
     if (!is_dir($memoryDir)) {
         @mkdir($memoryDir, 0700, true);
         @mkdir($memoryDir . '/L2_scenes', 0700, true);
@@ -337,6 +368,8 @@ function saveUsers($users) {
 function getUserDir($username) {
     $dir = USERS_DIR . '/' . preg_replace('/[^a-zA-Z0-9_]/', '_', $username);
     if (!is_dir($dir)) mkdir($dir, 0755, true);
+    $md = $dir . '/memory';
+    if (!is_dir($md)) @mkdir($md, 0700, true);
     return $dir;
 }
 function getUserUsage($username) {
@@ -358,7 +391,7 @@ function getUserDirSafe() {
     if (isset($_SESSION['user'])) return getUserDir($_SESSION['user']);
     $dir = USERS_DIR . '/guest';
     if (!is_dir($dir)) mkdir($dir, 0755, true);
-    foreach (['images','videos','music','voice','files'] as $sub) {
+    foreach (['images','videos','music','voice','files','memory'] as $sub) {
         $sd = $dir . '/' . $sub;
         if (!is_dir($sd)) @mkdir($sd, 0755, true);
     }
