@@ -1076,8 +1076,14 @@ async function runAgentLoop(userMessage){
     addStepMessage('Agent 循环 #'+loopCount+'：正在调用 deepseek-v4-flash...');
     const thinkingOpts=ThinkingModeHandler.buildThinkingOptions(true,'max');
     let llmResponse;
-    try{llmResponse=await proxyRequest('opencode-go','/chat/completions',{model:'deepseek-v4-flash',messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:4096,...thinkingOpts});}
-    catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}addAgentMessage('❌ 调用模型失败: '+e.message);setRunning(false);return;}
+    // LLM 调用重试：最多 3 次，指数退避（2s→4s→8s），应对网络波动
+    for(let llmRetry=0;llmRetry<3;llmRetry++){
+      try{llmResponse=await proxyRequest('opencode-go','/chat/completions',{model:'deepseek-v4-flash',messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:4096,...thinkingOpts});break;}
+      catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
+        if(llmRetry>=2){addAgentMessage('❌ 调用模型失败（已重试3次）: '+e.message);setRunning(false);return;}
+        const d=Math.min(2000*Math.pow(2,llmRetry),10000);
+        addStepMessage('⚠️ 模型调用失败，'+d/1000+'秒后重试...');await new Promise(r=>setTimeout(r,d));}
+    }
     if(stopRequested){addStepMessage('⏹ 已停止');break;}
     const choice=llmResponse.choices?.[0];
     if(!choice){addAgentMessage('模型返回异常');setRunning(false);return;}
