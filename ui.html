@@ -1174,7 +1174,7 @@ function renderFileList(files,currentPath){
       +'<span class="fm-item-size">'+sizeStr+'</span>'
       +'<span class="fm-item-mtime">'+escapeHtml(f.mtime||'')+'</span>'
       +'<span class="fm-item-actions">'
-      +(f.is_dir?'':'<button class="fm-item-action share fm-action-share" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="分享链接">🔗</button>')+(f.is_dir&&!currentPath&&['files','images','music','videos','voice','project','memory'].includes(f.name)?'':'<button class="fm-item-action del fm-action-delete" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="删除">🗑️</button>')
+      +(f.is_dir?'':'<button class="fm-item-action share fm-action-share" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="分享链接">🔗</button>')+(f.is_dir&&!currentPath&&['files','images','music','videos','voice','project','memory','tmp'].includes(f.name)?'':'<button class="fm-item-action del fm-action-delete" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="删除">🗑️</button>')
       +'</span></div>';
   });
   body.innerHTML=html;

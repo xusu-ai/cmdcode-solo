@@ -370,6 +370,8 @@ function getUserDir($username) {
     if (!is_dir($dir)) mkdir($dir, 0755, true);
     $md = $dir . '/memory';
     if (!is_dir($md)) @mkdir($md, 0700, true);
+    $td = $dir . '/tmp';
+    if (!is_dir($td)) @mkdir($td, 0755, true);
     return $dir;
 }
 function getUserUsage($username) {
@@ -391,7 +393,7 @@ function getUserDirSafe() {
     if (isset($_SESSION['user'])) return getUserDir($_SESSION['user']);
     $dir = USERS_DIR . '/guest';
     if (!is_dir($dir)) mkdir($dir, 0755, true);
-    foreach (['images','videos','music','voice','files','memory'] as $sub) {
+    foreach (['images','videos','music','voice','files','memory','tmp'] as $sub) {
         $sd = $dir . '/' . $sub;
         if (!is_dir($sd)) @mkdir($sd, 0755, true);
     }
