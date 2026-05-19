@@ -1150,12 +1150,19 @@ if ($api_path === '/music_pending') {
         foreach (glob("$taskDir/*.params") as $paramFile) {
             $id = basename($paramFile, '.params');
             if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
-            if (!file_exists("$taskDir/$id.result")) {
-                // 检查是否超时（超过 30 分钟未处理则忽略）
-                $age = time() - filemtime($paramFile);
-                if ($age < 1800) {
-                    $pending[] = $id;
-                }
+            // 跳过已有 .result（已完成）或 .processing（正在处理中）的任务
+            if (file_exists("$taskDir/$id.result")) continue;
+            if (file_exists("$taskDir/$id.processing")) {
+                // 检查 processing 文件是否超时（超过 5 分钟视为 worker 已崩溃）
+                $age = time() - filemtime("$taskDir/$id.processing");
+                if ($age < 300) continue;
+                // 超时 → 删除 stale processing 锁，允许重新处理
+                @unlink("$taskDir/$id.processing");
+            }
+            // 检查是否超时（超过 30 分钟未处理则忽略）
+            $age = time() - filemtime($paramFile);
+            if ($age < 1800) {
+                $pending[] = $id;
             }
         }
     }
@@ -1241,12 +1248,14 @@ if ($api_path === '/music_process') {
         $output['_http_code'] = $result['http_code'];
         file_put_contents("$taskDir/$taskId.result", json_encode($output));
         @unlink($paramFile);
+        @unlink("$taskDir/$taskId.processing");
         echo json_encode(['status' => 'completed']);
     } else {
         file_put_contents("$taskDir/$taskId.result", json_encode([
             'error' => 'proxy_all_keys_exhausted',
             'message' => '所有 API Key 均已耗尽: ' . $last_error,
         ]));
+        @unlink("$taskDir/$taskId.processing");
         echo json_encode(['status' => 'failed', 'error' => $last_error]);
     }
     exit;
@@ -1260,11 +1269,30 @@ if ($api_path === '/music_read_params') {
         echo json_encode(['error' => 'invalid_task_id']);
         exit;
     }
-    $paramFile = "/vhost/tmp/music_tasks/$taskId.params";
+    $taskDir = '/vhost/tmp/music_tasks';
+    $paramFile = "$taskDir/$taskId.params";
     if (!file_exists($paramFile)) {
         echo json_encode(['error' => 'task_not_found']);
         exit;
     }
+    // 原子预留：创建 .processing 文件（标记任务已被 Worker 认领）
+    $processingFile = "$taskDir/$taskId.processing";
+    $processingFh = @fopen($processingFile, 'x'); // 'x' = 创建并独占写入，文件已存在则失败
+    if ($processingFh === false) {
+        // .processing 已存在 → 检查是否超时
+        if (file_exists($processingFile)) {
+            $age = time() - filemtime($processingFile);
+            if ($age < 300) {
+                echo json_encode(['error' => 'task_already_processing']);
+                exit;
+            }
+            // 超时 → 覆盖旧锁
+        }
+        $processingFh = fopen($processingFile, 'w');
+    }
+    fwrite($processingFh, (string)getmypid());
+    fclose($processingFh);
+
     $originalInput = unserialize(file_get_contents($paramFile));
     echo json_encode([
         'task_id' => $taskId,
@@ -1291,6 +1319,7 @@ if ($api_path === '/music_write_result') {
     $taskDir = '/vhost/tmp/music_tasks';
     file_put_contents("$taskDir/$taskId.result", json_encode($resultData));
     @unlink("$taskDir/$taskId.params");
+    @unlink("$taskDir/$taskId.processing"); // 释放原子预留锁
     echo json_encode(['status' => 'saved']);
     exit;
 }
@@ -1370,11 +1399,18 @@ if ($api_path === '/video_pending') {
         foreach (glob("$VIDEO_TASK_DIR/*.params") as $paramFile) {
             $id = basename($paramFile, '.params');
             if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
-            if (!file_exists("$VIDEO_TASK_DIR/$id.result")) {
-                $age = time() - filemtime($paramFile);
-                if ($age < 1800) {
-                    $pending[] = $id;
-                }
+            // 跳过已有 .result（已完成）或 .processing（正在处理中）的任务
+            if (file_exists("$VIDEO_TASK_DIR/$id.result")) continue;
+            if (file_exists("$VIDEO_TASK_DIR/$id.processing")) {
+                // 检查 processing 文件是否超时（超过 5 分钟视为 worker 已崩溃）
+                $age = time() - filemtime("$VIDEO_TASK_DIR/$id.processing");
+                if ($age < 300) continue;
+                // 超时 → 删除 stale processing 锁，允许重新处理
+                @unlink("$VIDEO_TASK_DIR/$id.processing");
+            }
+            $age = time() - filemtime($paramFile);
+            if ($age < 1800) {
+                $pending[] = $id;
             }
         }
     }
@@ -1446,12 +1482,14 @@ if ($api_path === '/video_process') {
         $output['_http_code'] = $result['http_code'];
         file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
         @unlink($paramFile);
+        @unlink("$VIDEO_TASK_DIR/$taskId.processing");
         echo json_encode(['status' => 'completed']);
     } else {
         file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
             'error' => 'proxy_all_keys_exhausted',
             'message' => '所有 API Key 均已耗尽: ' . $last_error,
         ]));
+        @unlink("$VIDEO_TASK_DIR/$taskId.processing");
         echo json_encode(['status' => 'failed', 'error' => $last_error]);
     }
     exit;
@@ -1470,6 +1508,24 @@ if ($api_path === '/video_read_params') {
         echo json_encode(['error' => 'task_not_found']);
         exit;
     }
+    // 原子预留：创建 .processing 文件（标记任务已被 Worker 认领）
+    $processingFile = "$VIDEO_TASK_DIR/$taskId.processing";
+    $processingFh = @fopen($processingFile, 'x'); // 'x' = 创建并独占写入，文件已存在则失败
+    if ($processingFh === false) {
+        // .processing 已存在 → 检查是否超时
+        if (file_exists($processingFile)) {
+            $age = time() - filemtime($processingFile);
+            if ($age < 300) {
+                echo json_encode(['error' => 'task_already_processing']);
+                exit;
+            }
+            // 超时 → 覆盖旧锁
+        }
+        $processingFh = fopen($processingFile, 'w');
+    }
+    fwrite($processingFh, (string)getmypid());
+    fclose($processingFh);
+
     $originalInput = unserialize(file_get_contents($paramFile));
     echo json_encode([
         'task_id' => $taskId,
@@ -1495,6 +1551,7 @@ if ($api_path === '/video_write_result') {
     }
     file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($resultData));
     @unlink("$VIDEO_TASK_DIR/$taskId.params");
+    @unlink("$VIDEO_TASK_DIR/$taskId.processing"); // 释放原子预留锁
     echo json_encode(['status' => 'saved']);
     exit;
 }
@@ -1766,6 +1823,9 @@ if ($api_path === '/memory_pending') {
     }
     
     $pdo = getMemoryDB();
+    // 先恢复超时的 processing 任务（worker 已崩溃超过 5 分钟）
+    $pdo->exec("UPDATE memory_tasks SET status='pending', updated_at=NOW() WHERE status='processing' AND updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)");
+    // 列出待处理任务
     $stmt = $pdo->query("SELECT id FROM memory_tasks WHERE status='pending' ORDER BY created_at ASC LIMIT 10");
     $pending = $stmt->fetchAll(PDO::FETCH_COLUMN);
     echo json_encode(['pending' => $pending, 'count' => count($pending)]);
@@ -1865,6 +1925,13 @@ if ($api_path === '/memory_read_params') {
         exit;
     }
     $pdo = getMemoryDB();
+    // 原子抢锁：只认领 status='pending' 的任务，避免重复处理
+    $stmt = $pdo->prepare("UPDATE memory_tasks SET status='processing', updated_at=NOW() WHERE id=? AND status='pending'");
+    $stmt->execute([$taskId]);
+    if ($stmt->rowCount() === 0) {
+        echo json_encode(['error' => 'task_not_pending_or_already_processing']);
+        exit;
+    }
     $stmt = $pdo->prepare("SELECT user_id, payload FROM memory_tasks WHERE id=?");
     $stmt->execute([$taskId]);
     $task = $stmt->fetch();

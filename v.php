@@ -20,7 +20,7 @@ $WHITELIST = [
 ];
 
 $file = $_GET['f'] ?? '';
-$file = basename($file); // 防路径穿越
+$file = basename($file); // 防路径穿越（第一层防御）
 
 if (!in_array($file, $WHITELIST)) {
     header('Content-Type: text/html; charset=utf-8');
@@ -34,8 +34,16 @@ if (!in_array($file, $WHITELIST)) {
 }
 
 // ── 读取原始源代码（不执行！） ──
+// 第二层防御：realpath() 确保解析后的路径在 __DIR__ 内
 $path = __DIR__ . '/' . $file;
-$source = file_get_contents($path);
+$realPath = realpath($path);
+$baseDir = realpath(__DIR__);
+if ($realPath === false || strncmp($realPath, $baseDir, strlen($baseDir)) !== 0) {
+    http_response_code(403);
+    echo '文件路径无效';
+    exit;
+}
+$source = file_get_contents($realPath);
 if ($source === false) {
     http_response_code(500);
     echo '读取文件失败';
