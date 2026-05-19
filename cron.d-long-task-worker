@@ -1,0 +1,6 @@
+# 每15秒触发一次 long-task-cron-worker（sleep 错峰）
+# 处理音乐/视频等长时间运行的 MiniMax API 任务
+* * * * * root /bin/bash /root/scripts/long-task-cron-worker.sh
+* * * * * root sleep 15; /bin/bash /root/scripts/long-task-cron-worker.sh
+* * * * * root sleep 30; /bin/bash /root/scripts/long-task-cron-worker.sh
+* * * * * root sleep 45; /bin/bash /root/scripts/long-task-cron-worker.sh
