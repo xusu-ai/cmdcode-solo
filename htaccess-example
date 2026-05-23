@@ -1,0 +1,15 @@
+# ── CmdCode Minimax Toolset 安全规则 ──
+
+# 禁止直接访问 .enc.php 加密配置文件
+# 多种方式兜底，兼容 Apache / LiteSpeed
+RedirectMatch 403 \.enc\.php$
+
+# 禁止直接访问 .htaccess 本身
+<FilesMatch "^\.ht">
+  Require all denied
+  Order Allow,Deny
+  Deny from all
+</FilesMatch>
+
+# 禁止目录列表
+Options -Indexes

@@ -1,0 +1,1613 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://api.minimax.chat https://opencode.ai; img-src 'self' data: https: http:; font-src 'self' data:; media-src 'self' https:;">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>CmdCode Agent</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#ffffff;--bg-chat:#f5f5f7;--bg-input:rgba(255,255,255,.98);
+  --text:#1d1d1f;--text-secondary:#86868b;--text-tertiary:#aeaeb2;
+  --separator:rgba(60,60,67,.08);--separator-thick:rgba(60,60,67,.12);
+  --blue:#007aff;--blue-bubble:#007aff;--gray-bubble:#e9e9eb;
+  --shadow:0 .5px 1px rgba(0,0,0,.04);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+  --nav-height:52px
+}
+body,html{
+  font-family:-apple-system,BlinkMacSystemFont,SF Pro Display,SF Pro Text,Helvetica Neue,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  height:100%;width:100%;
+  -webkit-font-smoothing:antialiased
+}
+.app{display:flex;flex-direction:column;height:100dvh;width:100%;position:relative}
+/* ── Navigation Bar ── */
+.nav{
+  display:flex;align-items:center;padding:0 16px;
+  height:var(--nav-height);flex-shrink:0;
+  background:rgba(255,255,255,.96);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border-bottom:.5px solid var(--separator);
+  gap:10px;
+  padding-top:calc(env(safe-area-inset-top,0px));
+  height:calc(var(--nav-height) + env(safe-area-inset-top,0px))
+}
+.nav-status{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary)}
+.nav-dot{width:7px;height:7px;border-radius:50%;background:#34c759;flex-shrink:0}
+.nav-dot.inactive{background:var(--text-tertiary)}
+.user-area{display:flex;align-items:center;gap:8px}
+.user-btn{
+  font-size:12px;font-weight:600;background:var(--blue);color:#fff;
+  border:none;padding:6px 14px;border-radius:20px;cursor:pointer;
+  transition:opacity .2s;font-family:inherit
+}
+.user-btn:hover{opacity:.85}
+.user-info{font-size:12px;color:var(--text-secondary)}
+#userNameSpan{cursor:pointer;transition:opacity .15s}
+#userNameSpan:hover{opacity:.7}
+#quotaInfo{cursor:pointer;transition:opacity .15s}
+#quotaInfo:hover{opacity:.7}
+/* ── Welcome / Empty State ── */
+.welcome{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;padding:24px;text-align:center;gap:8px
+}
+.welcome-icon{font-size:48px;margin-bottom:4px}
+.welcome-title{font-size:22px;font-weight:700;letter-spacing:-.3px}
+.welcome-sub{font-size:15px;color:var(--text-secondary);line-height:1.4;max-width:320px}
+/* ── Chat Area ── */
+.chat{
+  flex:1;overflow-y:auto;overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+  background:var(--bg-chat);
+  display:flex;flex-direction:column;
+  padding:12px 12px calc(12px + var(--safe-bottom))
+}
+.chat:empty{display:flex;align-items:center;justify-content:center}
+/* ── Messages ── */
+.msg{display:flex;margin-bottom:6px;animation:msgIn .3s ease}
+.msg.user{justify-content:flex-end}
+.msg.agent{justify-content:flex-start}
+.msg.step{justify-content:flex-start;margin-bottom:4px}
+.msg-bubble{
+  max-width:80%;padding:10px 14px;font-size:15px;line-height:1.4;
+  word-break:break-word;overflow-wrap:break-word;white-space:pre-wrap;
+  position:relative
+}
+.user .msg-bubble{
+  background:var(--blue-bubble);color:#fff;
+  border-radius:18px 4px 18px 18px
+}
+.agent .msg-bubble{
+  background:var(--gray-bubble);color:var(--text);
+  border-radius:4px 18px 18px 18px
+}
+.step .msg-step{
+  font-size:11px;color:var(--text-tertiary);
+  background:rgba(120,120,128,.08);padding:4px 12px;
+  border-radius:12px;max-width:90%;text-align:center
+}
+.agent .msg-bubble img{max-width:100%;border-radius:8px;margin:6px 0;display:block}
+.agent .msg-bubble a{color:#5856d6;text-decoration:underline}
+.msg-tool{
+  display:inline-block;font-size:10px;font-weight:600;
+  background:rgba(0,122,255,.1);color:var(--blue);
+  padding:2px 8px;border-radius:10px;margin-left:6px;vertical-align:middle
+}
+@keyframes msgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+/* ── Typing Indicator ── */
+.typing{display:flex;gap:3px;padding:14px 18px;background:var(--gray-bubble);border-radius:18px;align-items:center}
+.typing-dot{width:7px;height:7px;border-radius:50%;background:var(--text-tertiary);animation:typing 1.4s infinite}
+.typing-dot:nth-child(2){animation-delay:.2s}
+.typing-dot:nth-child(3){animation-delay:.4s}
+@keyframes typing{0%,60%,100%{opacity:.3}30%{opacity:1}}
+/* ── Input Area ── */
+.input-area{
+  flex-shrink:0;
+  background:var(--bg-input);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border-top:.5px solid var(--separator);
+  padding:8px 12px calc(8px + var(--safe-bottom));
+  display:flex;align-items:center;gap:8px
+}
+.input-field{
+  flex:1;
+  font-family:inherit;font-size:16px;line-height:1.3;
+  padding:10px 16px;border:1.5px solid var(--separator-thick);
+  border-radius:24px;outline:none;background:var(--bg);
+  color:var(--text);transition:border-color .2s,box-shadow .2s;
+  resize:none;overflow-y:auto;min-height:42px;max-height:150px
+}
+.input-field:focus{border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,122,255,.12)}
+.input-field::placeholder{color:var(--text-tertiary)}
+.send-btn{
+  width:40px;height:40px;border-radius:50%;border:none;
+  background:var(--blue);color:#fff;font-size:16px;
+  cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  transition:opacity .2s,transform .15s;font-family:inherit
+}
+.send-btn:disabled{opacity:.3;cursor:not-allowed}
+.send-btn:not(:disabled):active{transform:scale(.92)}
+.send-btn.guest{width:auto;height:42px;border-radius:21px;padding:0 12px;font-size:11px;line-height:42px;white-space:nowrap;opacity:.7;background:#6b7280}
+.send-btn.stop{background:#ff3b30;border-radius:6px;width:40px}
+.send-btn.stop:active{transform:scale(.92)}
+/* ── Auth Modal ── */
+.modal-overlay{
+  position:fixed;inset:0;z-index:2000;
+  background:rgba(0,0,0,.4);
+  display:flex;align-items:center;justify-content:center;
+  padding:24px;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)
+}
+.modal-overlay.hidden{display:none}
+.modal-box{
+  background:var(--bg);border-radius:20px;
+  padding:28px 24px 20px;width:340px;max-width:100%;
+  box-shadow:0 8px 40px rgba(0,0,0,.15);
+  display:flex;flex-direction:column;gap:12px;
+  animation:modalIn .35s ease
+}
+@keyframes modalIn{from{opacity:0;transform:scale(.95) translateY(10px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.modal-title{font-size:20px;font-weight:700;text-align:center;margin-bottom:4px}
+.modal-input{
+  padding:14px 16px;border:1.5px solid var(--separator-thick);
+  border-radius:12px;font-size:16px;outline:none;
+  font-family:inherit;background:var(--bg-chat);transition:border-color .2s
+}
+.modal-input:focus{border-color:var(--blue)}
+.modal-error{font-size:13px;color:#ff3b30;text-align:center;min-height:18px}
+.modal-primary{
+  padding:14px;border:none;border-radius:12px;
+  background:var(--blue);color:#fff;font-size:16px;font-weight:600;
+  cursor:pointer;transition:opacity .2s;font-family:inherit
+}
+.modal-primary:active{opacity:.8}
+.modal-link{
+  background:none;border:none;color:var(--blue);font-size:14px;
+  cursor:pointer;text-decoration:underline;font-family:inherit;
+  padding:4px
+}
+/* ── File Manager ── */
+.fm-overlay{
+  position:fixed;inset:0;z-index:1500;
+  background:rgba(0,0,0,.35);
+  display:flex;align-items:center;justify-content:center;
+  padding:24px;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)
+}
+.fm-overlay.hidden{display:none}
+.fm-panel{
+  background:var(--bg);border-radius:16px;
+  width:680px;max-width:100%;height:520px;max-height:80vh;
+  display:flex;flex-direction:column;
+  box-shadow:0 8px 40px rgba(0,0,0,.15);
+  animation:modalIn .35s ease;overflow:hidden
+}
+.fm-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;border-bottom:.5px solid var(--separator);
+  flex-shrink:0;gap:8px
+}
+.fm-breadcrumb{
+  display:flex;align-items:center;gap:4px;font-size:13px;
+  overflow-x:auto;flex:1;white-space:nowrap;
+  scrollbar-width:none;-ms-overflow-style:none
+}
+.fm-breadcrumb::-webkit-scrollbar{display:none}
+.fm-breadcrumb span{cursor:pointer;color:var(--blue);font-weight:500;padding:2px 4px;border-radius:4px;transition:background .15s}
+.fm-breadcrumb span:hover{background:rgba(0,122,255,.08)}
+.fm-breadcrumb .sep{color:var(--text-tertiary);cursor:default;padding:0 2px}
+.fm-breadcrumb .current{color:var(--text);font-weight:600;cursor:default}
+.fm-close{
+  width:32px;height:32px;border-radius:8px;border:none;
+  background:var(--bg-chat);color:var(--text-secondary);font-size:18px;
+  cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;font-family:inherit;line-height:1
+}
+.fm-close:hover{background:var(--separator-thick)}
+.fm-body{flex:1;overflow-y:auto;padding:4px 0}
+.fm-body::-webkit-scrollbar{width:4px}
+.fm-body::-webkit-scrollbar-track{background:transparent}
+.fm-body::-webkit-scrollbar-thumb{background:var(--text-tertiary);border-radius:2px}
+.fm-empty{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:100%;color:var(--text-tertiary);font-size:14px;gap:4px
+}
+.fm-item{
+  display:flex;align-items:center;padding:8px 16px;gap:8px;
+  cursor:default;transition:background .1s;border-bottom:.5px solid var(--separator);user-select:none;min-height:44px
+}
+.fm-item:hover{background:rgba(0,122,255,.04)}
+.fm-item-icon{font-size:18px;flex-shrink:0;width:24px;text-align:center}
+.fm-item-dir,.fm-item-file{cursor:pointer}
+.fm-item-name{flex:1;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.fm-item-name:hover{color:var(--blue)}
+.fm-item-size{font-size:12px;color:var(--text-tertiary);flex-shrink:0;width:72px;text-align:right}
+.fm-item-mtime{font-size:12px;color:var(--text-tertiary);flex-shrink:0;width:130px;text-align:right}
+.fm-item-actions{display:flex;gap:2px;flex-shrink:0;opacity:0;transition:opacity .15s}
+.fm-item:hover .fm-item-actions{opacity:1}
+.fm-item-action{
+  width:28px;height:28px;border-radius:6px;border:none;
+  font-size:14px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;font-family:inherit;background:transparent;color:var(--text-secondary)
+}
+.fm-item-action:hover{background:var(--separator-thick)}
+.fm-item-action.del:hover{color:#ff3b30;background:rgba(255,59,48,.1)}
+.fm-item-action.share:hover{color:#007aff;background:rgba(0,122,255,.1)}
+.fm-footer{
+  padding:10px 16px;border-top:.5px solid var(--separator);flex-shrink:0
+}
+.fm-quota-text{font-size:11px;color:var(--text-tertiary);margin-bottom:4px}
+.fm-quota-bar{
+  height:4px;border-radius:2px;background:var(--separator-thick);overflow:hidden
+}
+.fm-quota-fill{
+  height:100%;border-radius:2px;background:var(--blue);transition:width .3s
+}
+.fm-confirm-del{
+  font-size:11px;color:#ff3b30;padding:4px 8px;cursor:pointer;
+  border-radius:4px;transition:background .15s;user-select:none
+}
+.fm-confirm-del:hover{background:rgba(255,59,48,.1)}
+.fm-loading{
+  display:flex;align-items:center;justify-content:center;height:100%;
+  color:var(--text-tertiary);font-size:14px
+}
+/* ── Image Viewer Overlay ── */
+.iv-overlay{
+  position:fixed;inset:0;z-index:1800;
+  background:rgba(0,0,0,.85);
+  display:flex;align-items:center;justify-content:center;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  animation:fadeIn .2s ease
+}
+.iv-overlay.hidden{display:none}
+.iv-container{
+  position:relative;max-width:94vw;max-height:88vh;
+  display:flex;align-items:center;justify-content:center
+}
+.iv-container img{
+  max-width:100%;max-height:88vh;border-radius:8px;
+  box-shadow:0 4px 40px rgba(0,0,0,.5);
+  object-fit:contain;display:block;
+  transition:opacity .25s ease
+}
+.iv-close{
+  position:fixed;top:16px;right:16px;
+  width:40px;height:40px;border-radius:50%;border:none;
+  background:rgba(255,255,255,.15);color:#fff;font-size:22px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;font-family:inherit;line-height:1;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  z-index:1801
+}
+.iv-close:hover{background:rgba(255,255,255,.3)}
+.iv-topbar{
+  position:fixed;top:16px;right:16px;
+  display:flex;gap:8px;z-index:1801
+}
+.iv-top-btn{
+  width:40px;height:40px;border-radius:50%;border:none;
+  background:rgba(255,255,255,.15);color:#fff;font-size:18px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:background .15s;font-family:inherit;line-height:1;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)
+}
+.iv-top-btn:hover{background:rgba(255,255,255,.3)}
+.iv-name{
+  position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.7);font-size:13px;
+  background:rgba(0,0,0,.5);padding:6px 16px;border-radius:20px;
+  max-width:80%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)
+}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.iv-prev,.iv-next{
+  position:absolute;top:50%;transform:translateY(-50%);
+  padding:8px;border:none;
+  background:transparent;color:rgba(255,255,255,.2);font-size:36px;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  transition:color .15s,transform .15s;font-family:inherit;line-height:1;
+  z-index:2;user-select:none;-webkit-user-select:none
+}
+.iv-prev{left:12px}
+.iv-next{right:12px}
+.iv-prev:hover,.iv-next:hover{color:rgba(255,255,255,.5);transform:translateY(-50%) scale(1.15)}
+.iv-prev:active,.iv-next:active{transform:translateY(-50%) scale(.95)}
+/* ── 移动端竖屏：文件列表紧凑显示 ── */
+@media(max-width:520px){
+  .fm-panel{width:100%;height:100%;max-height:100%;border-radius:0;padding-top:env(safe-area-inset-top,0)}
+  .fm-overlay{padding:0}
+  .fm-item{flex-wrap:wrap;padding:6px 12px;min-height:auto}
+  .fm-item-icon{font-size:16px;width:20px}
+  .fm-item-name{flex:0 0 calc(100% - 70px);font-size:13px;line-height:1.3;order:1}
+  .fm-item-size{width:auto;text-align:left;font-size:11px;color:var(--text-tertiary);order:3;padding-left:28px}
+  .fm-item-mtime{width:auto;font-size:11px;color:var(--text-tertiary);order:4;padding-left:8px}
+  .fm-item-actions{opacity:1;order:5;margin-left:auto;gap:0}
+  .fm-item-action{width:32px;height:32px}
+}
+/* ── Scrollbar ── */
+.chat::-webkit-scrollbar{width:4px}
+.chat::-webkit-scrollbar-track{background:transparent}
+.chat::-webkit-scrollbar-thumb{background:var(--text-tertiary);border-radius:2px}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Navigation Bar -->
+  <div class="nav">
+    <div class="user-area" id="userArea">
+      <button class="user-btn" id="loginBtn">登录</button>
+    </div>
+    <div class="nav-status" id="navStatus">
+      <div id="statusDot" class="nav-dot inactive"></div>
+      <span id="statusText">就绪</span>
+    </div>
+  </div>
+
+  <!-- Welcome / Chat Area -->
+  <div id="chatContainer" class="chat">
+    <div class="welcome" id="welcome">
+      <div class="welcome-icon">💬</div>
+      <div class="welcome-title">CmdCode Agent</div>
+      <div class="welcome-sub">访客模式 · 可直接使用 · 所有内容自动保存到共享文件夹 · 登录后可享 1GB 专属个人网盘</div>
+    </div>
+  </div>
+
+  <!-- Input Area -->
+  <div class="input-area">
+    <textarea id="userInput" class="input-field" rows="1" placeholder="输入任务..." autofocus></textarea>
+    <button id="sendBtn" class="send-btn">→</button>
+  </div>
+</div>
+
+<!-- File Manager -->
+<div class="fm-overlay hidden" id="fmOverlay">
+  <div class="fm-panel">
+    <div class="fm-header">
+      <div class="fm-breadcrumb" id="fmBreadcrumb"></div>
+      <button class="fm-close" id="fmCloseBtn">✕</button>
+    </div>
+    <div class="fm-body" id="fmBody"></div>
+    <div class="fm-footer" id="fmFooter"></div>
+  </div>
+</div>
+
+<!-- Image Viewer -->
+<div class="iv-overlay hidden" id="ivOverlay">
+  <div class="iv-topbar">
+    <button class="iv-top-btn" id="ivShareBtn" title="分享">↗</button>
+    <button class="iv-top-btn" id="ivCloseBtn">✕</button>
+  </div>
+  <div class="iv-container" id="ivContainer"></div>
+  <div class="iv-name" id="ivName"></div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay hidden" id="modalOverlay">
+  <div class="modal-box" id="modalBox">
+    <div class="modal-title" id="modalTitle">登录</div>
+    <input type="text" class="modal-input" id="modalUsername" placeholder="用户名">
+    <input type="password" class="modal-input" id="modalPassword" placeholder="密码">
+    <div class="modal-error" id="modalError"></div>
+    <button class="modal-primary" id="modalSubmit">登录</button>
+    <button class="modal-link" id="modalSwitch">没有账号？去注册</button>
+  </div>
+</div>
+
+<script>
+(()=>{
+const chatContainer=document.getElementById('chatContainer');
+const welcome=document.getElementById('welcome');
+const userInput=document.getElementById('userInput');
+const sendBtn=document.getElementById('sendBtn');
+const clearBtn=document.getElementById('clearBtn');
+const statusDot=document.getElementById('statusDot');
+const statusText=document.getElementById('statusText');
+const userArea=document.getElementById('userArea');
+const loginBtn=document.getElementById('loginBtn');
+const modalOverlay=document.getElementById('modalOverlay');
+const modalTitle=document.getElementById('modalTitle');
+const modalUsername=document.getElementById('modalUsername');
+const modalPassword=document.getElementById('modalPassword');
+const modalError=document.getElementById('modalError');
+const modalSubmit=document.getElementById('modalSubmit');
+const modalSwitch=document.getElementById('modalSwitch');
+const navStatus=document.getElementById('navStatus');
+const fmOverlay=document.getElementById('fmOverlay');
+const fmCloseBtn=document.getElementById('fmCloseBtn');
+const ivOverlay=document.getElementById('ivOverlay');
+const ivCloseBtn=document.getElementById('ivCloseBtn');
+const ivShareBtn=document.getElementById('ivShareBtn');
+const ivContainer=document.getElementById('ivContainer');
+const ivName=document.getElementById('ivName');
+
+const PROXY_URL='https://cmdcode.cn/cmdcode-minimax-toolset/proxy.php';
+// 默认聊天 LLM 供应商（后端已实现五密钥 429 轮换 + 每日 7:00 自动轮换）
+// 轮换链：opencode-go → opencode-go1 → ... → opencode-go4
+// 前端只需发送供应商名，后端自动处理限流容灾和日切
+const CHAT_PROVIDER='opencode-go';
+let accessToken='';  // 从服务器端获取，不硬编码在前端
+let isRunning=false;
+let abortController=null;
+let stopRequested=false;
+let commandQueue=[];  // BUG-04: 命令队列，防止批量命令丢失
+let currentUser=null;
+const GUEST_FOLDER='guest';
+function restrictPath(filePath){
+  if(filePath.includes('..'))throw new Error('路径不允许包含上级引用 (..)');
+  if(filePath.startsWith('/'))throw new Error('路径不允许使用绝对路径');
+  if(filePath.includes('~'))throw new Error('路径不允许使用 ~');
+  return filePath.replace(/^\//,'');
+}
+let modalMode='login';
+let currentSession={messages:[],awaitingUser:false,pendingToolCallId:null};
+let recentConversationMessages=[]; // 用于记忆系统提取
+let lastExtractionIndex=0;
+let sessionHealthInterval=null;
+
+// ── Session 健康检查与自动重登 ──
+async function attemptReauth(){
+  try{
+    const res=await apiCall('session');
+    if(res.loggedIn){accessToken=res.token||'';if(accessToken)addAgentMessage('🔄 会话已恢复');return true;}
+    // Token 失效，尝试重新获取
+    if(currentUser&&currentUser.username){
+      const tok=await apiCall('login',{username:currentUser.username,password:''});
+      // 如果登录成功（可能用 cookie session）
+      if(tok&&tok.token){accessToken=tok.token;addAgentMessage('🔄 令牌已刷新');return true;}
+    }
+  }catch(e){}
+  // 会话已过期，需要重新登录
+  currentUser=null;accessToken='';updateUIForUser(null);
+  addAgentMessage('⚠️ 登录已过期，请重新登录。');
+  return false;
+}
+
+function startSessionHealthCheck(){
+  stopSessionHealthCheck();
+  sessionHealthInterval=setInterval(async()=>{
+    if(!currentUser)return;
+    try{
+      const res=await apiCall('session');
+      if(!res.loggedIn){currentUser=null;accessToken='';updateUIForUser(null);addAgentMessage('⚠️ 会话已过期，请重新登录。');stopSessionHealthCheck();}
+    }catch(e){}
+  },300000); // 每5分钟检测一次
+}
+function stopSessionHealthCheck(){if(sessionHealthInterval){clearInterval(sessionHealthInterval);sessionHealthInterval=null;}}
+let MEMORY_EXTRACTION_INTERVAL=10*60*1000;
+let memoryExtractionTimer=null;
+let _videoQuotaExhausted=false; // 会话级：所有视频 Key 配额已耗尽，阻止重复调用
+let _musicQuotaExhausted=false; // 会话级：所有音乐 Key 配额已耗尽，阻止重复调用
+let _imageQuotaExhausted=false;
+let _ttsQuotaExhausted=false;
+let _visionQuotaExhausted=false;
+let _webSearchQuotaExhausted=false;
+
+function getUnprocessedMessages(){
+  return recentConversationMessages.slice(lastExtractionIndex);
+}
+function markMessagesExtracted(){
+  lastExtractionIndex=recentConversationMessages.length;
+}
+function startPeriodicMemoryExtraction(){
+  stopPeriodicMemoryExtraction();
+  memoryExtractionTimer=setInterval(()=>{
+    const msgs=getUnprocessedMessages();
+    if(msgs.length>=2)triggerMemoryExtraction(msgs);
+  },MEMORY_EXTRACTION_INTERVAL);
+}
+function stopPeriodicMemoryExtraction(){
+  if(memoryExtractionTimer){clearInterval(memoryExtractionTimer);memoryExtractionTimer=null;}
+}
+let fmCurrentPath='';
+let currentFileList=[];
+let ivImageList=[];
+let ivCurrentFile=null; // 当前弹窗显示的文件（图片/音频/视频），供分享用
+let ivImageIndex=0;
+let ivAbortController=null;
+
+function hideWelcome(){if(welcome)welcome.style.display='none'}
+
+function setRunning(running){
+  isRunning=running;
+  sendBtn.disabled=false;
+  statusDot.className=running?'nav-dot':'nav-dot inactive';
+  statusText.textContent=running?'思考中...':'就绪';
+  if(running){sendBtn.textContent='■';sendBtn.classList.add('stop');sendBtn.classList.remove('guest')}
+  else{sendBtn.classList.remove('stop');if(currentUser){sendBtn.textContent='→';sendBtn.classList.remove('guest')}else{sendBtn.textContent='访客';sendBtn.classList.add('guest')}}
+}
+// BUG-04: 命令队列处理器
+function processQueue(){
+  if(commandQueue.length===0)return;
+  if(isRunning)return;
+  const next=commandQueue.shift();
+  runAgentLoop(next);
+}
+
+// ── CSRF Token ──
+let csrfToken='';
+function generateCSRFToken(){const a=new Uint8Array(32);crypto.getRandomValues(a);csrfToken=Array.from(a,b=>b.toString(16).padStart(2,'0')).join('');}
+generateCSRFToken();
+
+async function apiCall(action,data={}){
+  if(stopRequested)throw new DOMException('The operation was aborted.','AbortError');
+  const body={_action:action,...data};
+  if(accessToken)body._token=accessToken;
+  let lastError;
+  for(let attempt=0;attempt<2;attempt++){
+    try{
+      const resp=await fetch(PROXY_URL,{
+        method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-Token':csrfToken},
+        body:JSON.stringify(body),
+        signal:abortController?.signal
+      });
+      let result;try{result=await resp.json();}catch{throw new Error('请求失败 (HTTP '+resp.status+')');}
+      if(!resp.ok||result.error){
+        const errMsg=result.error||'请求失败 (HTTP '+resp.status+')';
+        // 检测会话过期/令牌失效
+        if(resp.status===401||resp.status===403||(result.error&&(result.error.includes('token')||result.error.includes('认证')))){
+          if(currentUser&&attempt===0){await attemptReauth();continue;}
+        }
+        throw new Error(errMsg);
+      }
+      return result;
+    }catch(e){
+      if(e.name==='AbortError')throw e;
+      lastError=e;
+      if(attempt===0&&e.message.includes('Failed to fetch'))await new Promise(r=>setTimeout(r,1000));
+    }
+  }
+  throw lastError||new Error('请求失败');
+}
+
+function showModal(mode){
+  modalMode=mode;
+  modalTitle.textContent=mode==='login'?'登录':'注册';
+  modalSubmit.textContent=mode==='login'?'登录':'注册';
+  modalSwitch.textContent=mode==='login'?'没有账号？去注册':'已有账号？去登录';
+  modalUsername.value='';modalPassword.value='';modalError.textContent='';
+  modalOverlay.classList.remove('hidden');
+  modalUsername.focus();
+}
+function hideModal(){modalOverlay.classList.add('hidden')}
+
+async function handleAuth(){
+  const username=modalUsername.value.trim();
+  const password=modalPassword.value;
+  if(!username||!password){modalError.textContent='用户名和密码不能为空';return;}
+  if(username.length<2||username.length>30){modalError.textContent='用户名长度需在2-30个字符';return;}
+  if(password.length<4){modalError.textContent='密码长度至少4个字符';return;}
+  try{
+    if(modalMode==='register'){await apiCall('register',{username,password});await apiCall('login',{username,password});hideModal();await loginUser(username);}
+    else{await apiCall('login',{username,password});hideModal();await loginUser(username);}
+  }catch(e){modalError.textContent=e.message;}
+}
+
+async function loginUser(username){
+  currentUser={username};
+  // 从服务器获取代理令牌（替代前端硬编码）
+  try{const tok=await apiCall('get_proxy_token');accessToken=tok.token||'';if(!accessToken)addAgentMessage('⚠️ 无法获取API代理令牌，AI功能不可用，文件管理正常。');}catch(e){accessToken='';addAgentMessage('⚠️ 令牌获取失败，请尝试重新登录。');}
+  if(accessToken)startPeriodicMemoryExtraction();
+  startSessionHealthCheck();
+  updateUIForUser(username);
+  addAgentMessage('✅ admin已登录，你的 1GB 网盘已就绪，请点击左上角盘符或用户名打开网盘进行管理');
+}
+
+async function logoutUser(){
+  // 退出前触发记忆提取（仅提取未处理的消息）
+  if(currentUser&&recentConversationMessages.length>=2){
+    const remainingMsgs=getUnprocessedMessages();
+    if(remainingMsgs.length>=2)try{await triggerMemoryExtraction(remainingMsgs);}catch(e){console.warn('记忆提取失败:',e);}
+  }
+  stopPeriodicMemoryExtraction();
+  stopSessionHealthCheck();
+  try{await apiCall('logout');}catch(e){}
+  currentUser=null;
+  accessToken='';  // 清除令牌
+  updateUIForUser(null);
+  currentSession={messages:[],awaitingUser:false,pendingToolCallId:null};
+  recentConversationMessages=[];
+  lastExtractionIndex=0;
+  addAgentMessage('👋 已退出登录。');
+}
+
+function updateUIForUser(username){
+  if(username){
+    userArea.innerHTML='<span class="user-info" id="userNameSpan">👤 '+escapeHtml(username)+'</span><span class="user-info" id="quotaInfo">...</span><button class="user-btn" id="logoutBtn">退出</button>';
+    document.getElementById('userNameSpan').addEventListener('click',openFileManager);
+    document.getElementById('quotaInfo').addEventListener('click',openFileManager);
+    document.getElementById('logoutBtn').addEventListener('click',logoutUser);
+    fetchQuota();
+  }else{
+    userArea.innerHTML='<button class="user-btn" id="guestFmBtn">📁 访客文件</button><button class="user-btn" id="loginBtn" style="margin-left:4px">登录</button>  <span class="user-info" style="opacity:0.5;font-size:0.75rem">访客模式</span>';
+    document.getElementById('guestFmBtn').addEventListener('click',openFileManager);
+    document.getElementById('loginBtn').addEventListener('click',()=>showModal('login'));
+  }
+  sendBtn.disabled=false;
+  if(currentUser){sendBtn.textContent='→';sendBtn.classList.remove('guest')}else{sendBtn.textContent='访客';sendBtn.classList.add('guest')}
+}
+
+async function fetchQuota(){
+  try{
+    const res=await apiCall('quota');
+    const display = currentUser?.username==='admin' ? 1000 : res.quotaMB;
+    document.getElementById('quotaInfo').textContent=res.usedMB+'MB/'+display+'MB';
+  }catch(e){}
+}
+
+function addUserMessage(text){
+  hideWelcome();
+  const div=document.createElement('div');div.className='msg user';
+  div.innerHTML='<div class="msg-bubble">'+escapeHtml(text)+'</div>';
+  chatContainer.appendChild(div);scrollToBottom();
+}
+function addAgentMessage(text,toolName=null){
+  hideWelcome();
+  const div=document.createElement('div');div.className='msg agent';
+  let safe=escapeHtml(text);
+  safe=safe.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,function(m0,alt,url){return isSafeUrl(url)?'<img src="'+url+'" alt="'+alt+'" style="max-width:100%;border-radius:8px;margin:6px 0">':m0;});
+  safe=safe.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+  safe=safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g,function(m0,text,url){return isSafeUrl(url)?'<a href="'+url+'" target="_blank" rel="noopener">'+text+'</a>':m0;});
+  safe=safe.replace(/\n/g,'<br>');
+  let html='<div class="msg-bubble">'+safe;
+  if(toolName)html+=' <span class="msg-tool">🔧 '+toolName+'</span>';
+  html+='</div>';div.innerHTML=html;
+  chatContainer.appendChild(div);scrollToBottom();
+}
+function addStepMessage(step){
+  const div=document.createElement('div');div.className='msg step';
+  div.innerHTML='<div class="msg-step">🔄 '+escapeHtml(step)+'</div>';
+  chatContainer.appendChild(div);scrollToBottom();
+}
+function addImageMessage(url){
+  const div=document.createElement('div');div.className='msg agent';
+  const bubble=document.createElement('div');bubble.className='msg-bubble';
+  const img=document.createElement('img');img.src=url;img.alt='';
+  img.style.cssText='max-width:100%;border-radius:8px;margin:6px 0;display:block';img.loading='lazy';
+  bubble.appendChild(img);div.appendChild(bubble);
+  chatContainer.appendChild(div);scrollToBottom();
+}
+function scrollToBottom(){chatContainer.scrollTop=chatContainer.scrollHeight;}
+function escapeHtml(text){
+  return String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+// URL 安全检查：只允许 http/https/mailto 协议，拒绝 javascript: data: vbscript:
+function isSafeUrl(url){
+  const u=(url||'').trim().toLowerCase();
+  return !/^(javascript|data|vbscript|livescript):/.test(u);
+}
+
+// ── Memory System Functions ──
+// 检索相关记忆
+let memoryFetchInProgress=false;
+async function fetchMemoryContext(userInput){
+  if(!currentUser||!accessToken||memoryFetchInProgress)return '';
+  memoryFetchInProgress=true;
+  let context='';
+  try{
+    // 1. 语义搜索记忆
+    if(userInput&&userInput.length>3){
+      const resp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+        body:JSON.stringify({_action:'memory',sub_action:'search',query:userInput,limit:8,_token:accessToken})});
+      const data=await resp.json();
+      if(data.facts&&data.facts.length>0){
+        if(data.facts.length>0){
+          context+='\n[相关记忆]\n'+data.facts.map(f=>'- ['+f.importance+'分]['+f.category+'] '+f.fact).join('\n');
+        }
+      }
+    }
+    // 2. 用户画像
+    const personaResp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+      body:JSON.stringify({_action:'memory',sub_action:'get_persona',_token:accessToken})});
+    if(personaResp.ok){
+      const pData=await personaResp.json();
+      if(pData.traits)context+='\n[用户画像]\n'+pData.traits;
+    }
+    // 3. 当前场景上下文
+    const sceneId=localStorage.getItem('cmdcode_current_scene')||'scene_default';
+    if(sceneId){
+      const sceneResp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},signal:abortController?.signal,
+        body:JSON.stringify({_action:'memory',sub_action:'get_scene',scene_id:sceneId,_token:accessToken})});
+      if(sceneResp.ok){
+        const sData=await sceneResp.json();
+        if(sData.summary)context+='\n[当前场景: '+(sData.name||'')+']\n'+sData.summary;
+      }
+    }
+  }catch(e){if(e.name!=='AbortError')console.warn('记忆获取失败:',e.message);}
+  memoryFetchInProgress=false;
+  return context;
+}
+// 触发记忆提取（提取后自动标记已处理，避免重复提取）
+async function triggerMemoryExtraction(messages){
+  if(!accessToken||!messages||messages.length<2)return;
+  try{
+    await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({_action:'memory',sub_action:'enqueue_extract',
+        messages:messages.slice(0,10), // 最多10条
+        scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
+        _token:accessToken})});
+    markMessagesExtracted(); // 标记已提取
+  }catch(e){}
+}
+
+// ── Token Estimator ──
+class TokenEstimator{
+  // DeepSeek V4 实际限制 ~1M tokens. 中文+JSON 每字符约 1.5-2 tokens
+  // 用 chars*0.6 低估严重，改用更激进阈值 + 预检查
+  static DEEPSEEK_V4_COMPACT_THRESHOLD=48*1024;   // 约 72K chars → 提前压缩
+  static DEFAULT_COMPACT_THRESHOLD=24*1024;
+  static HARD_SAFE_CHARS=300000;  // 保险线：超过此字符数直接截断，不尝试压缩API
+  static countMessages(messages){
+    let totalChars=0;
+    for(const msg of messages){
+      if(typeof msg.content==='string')totalChars+=msg.content.length;
+      if(msg.tool_calls)totalChars+=JSON.stringify(msg.tool_calls).length;
+      if(msg.role==='tool'&&typeof msg.content==='string')totalChars+=msg.content.length;
+    }
+    return totalChars;
+  }
+  static needsCompaction(messages,model='deepseek-v4-flash'){
+    const threshold=model.includes('deepseek-v4')?this.DEEPSEEK_V4_COMPACT_THRESHOLD:this.DEFAULT_COMPACT_THRESHOLD;
+    return this.countMessages(messages)>threshold;
+  }
+}
+
+// ── Context Compaction ──
+const COMPACT_PROMPT_BASE='Your task is to create a detailed summary of the conversation so far, paying close attention to the user\'s explicit requests and your previous actions. This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.\n\nBefore providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts and ensure you\'ve covered all necessary points. In your analysis process:\n1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:\n   - The user\'s explicit requests and intents\n   - Your approach to addressing the user\'s requests\n   - Key decisions, technical concepts and code patterns\n   - Specific details like: file names, full code snippets, function signatures, file edits\n   - Errors that you ran into and how you fixed them\n   - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.\n2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.\n\nYour summary should include the following sections:\n1. Primary Request and Intent: Capture all of the user\'s explicit requests and intents in detail\n2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.\n3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Pay special attention to the most recent messages and include full code snippets where applicable and include a summary of why this file read or edit is important.\n4. Errors and fixes: List all errors that you ran into, and how you fixed them. Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.\n5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.\n6. All user messages: List ALL user messages that are not tool results. These are critical for understanding the users\' feedback and changing intent.\n7. Pending Tasks: Outline any pending tasks that you have explicitly been asked to work on.\n8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names and code snippets where applicable.\n9. Optional Next Step: List the next step that you will take that is related to the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY in line with the user\'s most recent explicit requests, and the task you were working on immediately before this summary request. If your last task was concluded, then only list next steps if they are explicitly in line with the users request. Do not start on tangential requests or really old requests that were already completed without confirming with the user first.\n\nHere\'s an example of how your output should be structured:\n\n<analysis> [Your thought process, ensuring all points are covered thoroughly and accurately] </analysis>\n\n1. Primary Request and Intent: [Detailed description]\n2. Key Technical Concepts: - [Concept 1] - [Concept 2] - [...]\n3. Files and Code Sections: - [File Name 1] - [Summary of why this file is important] - [Summary of the changes made to this file, if any] - [Important Code Snippet] - [File Name 2] - [Important Code Snippet] - [...]\n4. Errors and fixes: - [Detailed description of error 1]: - [How you fixed the error] - [User feedback on the error if any] - [...]\n5. Problem Solving: [Description of solved problems and ongoing troubleshooting]\n6. All user messages: - [Detailed non tool use user message] - [...]\n7. Pending Tasks: - [Task 1] - [Task 2] - [...]\n8. Current Work: [Precise description of current work]\n9. Optional Next Step: [Optional Next step to take]';
+
+async function compactContext(messages,proxyRequest){
+  if(!TokenEstimator.needsCompaction(messages,'deepseek-v4-flash'))return messages;
+  addStepMessage('上下文过长，正在压缩历史对话...');
+  const SYSTEM_MSG=messages[0];const RECENT_KEEP=8;
+  const recentMessages=messages.slice(-RECENT_KEEP);
+  const toSummarize=messages.slice(1,-RECENT_KEEP);
+  if(toSummarize.length===0)return messages;
+  let jsonl=toSummarize.map(msg=>JSON.stringify({role:msg.role,content:msg.content,tool_calls:msg.tool_calls})).join('\n');
+  // 安全截断：如果 jsonl 太大，只保留首尾部分
+  const MAX_SAFE_JSONL=250000;
+  if(jsonl.length>MAX_SAFE_JSONL){
+    addStepMessage('历史过长，截断后压缩...');
+    const head=jsonl.slice(0,120000);
+    const tail=jsonl.slice(-120000);
+    jsonl=head+'\n... [中间截断 '+(jsonl.length-MAX_SAFE_JSONL)+' 字符] ...\n'+tail;
+  }
+  const compactPrompt=COMPACT_PROMPT_BASE+'\n\nconversation below:\n\n```jsonl\n'+jsonl+'\n```';
+  try{
+    const resp=await proxyRequest(CHAT_PROVIDER,'/chat/completions',{
+      model:'deepseek-v4-flash',messages:[{role:'user',content:compactPrompt}],max_tokens:2048,temperature:.3
+    });
+    const summary=resp.choices?.[0]?.message?.content||'对话摘要生成失败';
+    const compactedMessages=[SYSTEM_MSG,{role:'system',content:'[上下文摘要 - 以下是对先前对话的压缩摘要]\n'+summary},...recentMessages];
+    addStepMessage('压缩完成，Token 数已降低');
+    return compactedMessages;
+  }catch(e){
+    // 压缩失败时，保留最早消息+最新消息，丢弃中间
+    addStepMessage('压缩失败，保留最早和最新消息...');
+    const keepHead=2; // 保留最早2条（除system外）
+    const keepTail=RECENT_KEEP;
+    if(toSummarize.length>keepHead+keepTail){
+      return [SYSTEM_MSG,...messages.slice(1,1+keepHead),...messages.slice(-keepTail)];
+    }
+    // 如果消息不够多，尝试只丢弃4条
+    const dropCount=Math.min(4,toSummarize.length);
+    return [SYSTEM_MSG,...messages.slice(1+dropCount)];
+  }
+}
+
+// ── Thinking Mode ──
+class ThinkingModeHandler{
+  static buildThinkingOptions(enabled,reasoningEffort='max'){
+    if(!enabled)return {};
+    return{thinking:{type:'enabled'},reasoning_effort:reasoningEffort};
+  }
+  static extractReasoning(message){return message.reasoning_content||null;}
+  static supportsThinking(model){return model.includes('deepseek-v4');}
+}
+
+// ── Agent Drift Guard ──
+const AGENT_DRIFT_GUARD_SKILL='name: agent-drift-guard\ndescription: Detect and correct execution drift while working on user requests.\n\n# Agent Drift Guard\nKeep execution tightly aligned with the user\'s actual request.\n\n## Quick Start\n1. State the user\'s requested outcome in one sentence.\n2. List explicit non-goals or boundaries the user has set.\n3. Ask whether the next action directly advances the requested outcome.\n4. If not, either cut it or pause to confirm.\n\n## Drift Signals\n- Exploring broadly before opening the most relevant file\n- Solving adjacent operational issues when the user asked only for code changes\n- Adding extra safeguards, scripts, docs, refactors, or cleanup\n- Reframing the task around what seems "better" instead of what was requested\n- Continuing with a broader plan after the user narrows the scope\n- Mixing diagnosis, remediation, and feature work\n- Touching production-like state without explicit permission';
+
+const EDIT_PRIORITY_PROMPT='\n## File Modification Strategy\n- **Prefer \'edit\' over \'write\'** for modifying existing files.\n- Use \'edit\' for targeted changes (search & replace specific sections).\n- Use \'write\' only for: creating new files, small files (< 50 lines), or complete rewrites.\n- For large files (> 100 lines), always use \'edit\' to minimize token usage and avoid errors.';
+
+// ── Tools ──
+const ALL_TOOLS=[
+  {type:'function',function:{name:'web_search',description:'搜索互联网，返回结构化结果列表。',parameters:{type:'object',properties:{query:{type:'string',description:'搜索关键词'}},required:['query']}}},
+  {type:'function',function:{name:'vision_recognition',description:'识别图片内容，回答关于图片的问题。',parameters:{type:'object',properties:{image_url:{type:'string',description:'图片URL'},question:{type:'string',description:'要询问的问题'}},required:['image_url']}}},
+  {type:'function',function:{name:'image_generation',description:'根据文字描述生成图片，返回图片URL列表。支持自定义分辨率、种子、参考图等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3'],default:'1:1'},n:{type:'integer',description:'生成数量1-4',default:1},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
+  {type:'function',function:{name:'video_generation',description:'根据描述生成视频。T2V文生视频(Hailuo-2.3)、I2V图生视频(Hailuo-2.3)、SEF首尾帧插帧(Hailuo-02)、S2V主体参考(S2V-01)。参考 mmx-cli 参数模型。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述'},first_frame_image:{type:'string',description:'首帧图片URL（图生视频I2V模式）'},last_frame_image:{type:'string',description:'尾帧图片URL（与first_frame_image配合→Hailuo-02 SEF插帧）'},subject_image:{type:'string',description:'主体参考图URL（角色一致性→S2V-01模型）'}},required:['prompt']}}},
+  {type:'function',function:{name:'music_generation',description:'生成音乐或歌曲，返回音频URL。支持精细控制：曲风、情绪、乐器、速度、调性等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（如：轻快爵士风格，夏天的海边）'},lyrics:{type:'string',description:'歌词（可选，不填则纯音乐）'},instrumental:{type:'boolean',description:'纯音乐（无歌词，与lyrics互斥）',default:false},lyrics_optimizer:{type:'boolean',description:'自动生成歌词（与lyrics/instrumental互斥）',default:false},genre:{type:'string',description:'曲风（如：folk, pop, jazz, rock, classical, electronic, rnb, hiphop）'},mood:{type:'string',description:'情绪/氛围（如：warm, melancholic, uplifting, dark, dreamy）'},vocals:{type:'string',description:'人声风格（如：warm male baritone, bright female soprano）'},instruments:{type:'string',description:'主要乐器（如：acoustic guitar, piano, strings）'},tempo:{type:'string',description:'速度描述（如：fast, slow, moderate）'},bpm:{type:'integer',description:'精确BPM数值（如95, 120）'},key:{type:'string',description:'调性（如：C major, A minor）'}},required:['prompt']}}},
+  {type:'function',function:{name:'text_to_speech',description:'将文本转为语音，返回音频URL。可选音色：female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), male-qn-qingse(青年男声), female-tianmei(甜美)等。',parameters:{type:'object',properties:{text:{type:'string',description:'要读出的文本'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',minimum:0.5,maximum:2.0,default:1.0},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
+  {type:'function',function:{name:'bash',description:'在服务器上执行 Shell 命令（真实执行，支持curl、git等）。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令'}},required:['command']}}},
+  {type:'function',function:{name:'read',description:'读取文件内容。登录用户访问个人文件夹，访客访问 guest/ 文件夹。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},offset:{type:'integer',description:'起始行号'},limit:{type:'integer',description:'读取行数'}},required:['file_path']}}},
+  {type:'function',function:{name:'write',description:'将内容写入文件。请按目录分类：项目文件→project/项目名/子文件夹（如 project/贪吃蛇游戏/snake.html），临时文件→tmp/文件名（如 tmp/debug.log），通用文档→files/文件名。不要直接放根目录。登录用户写入个人文件夹，访客写入 guest/。大文件修改优先用 edit 工具。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径。项目→project/项目名/文件名，临时→tmp/文件名，通用→files/文件名'},content:{type:'string',description:'要写入的内容'}},required:['file_path','content']}}},
+  {type:'function',function:{name:'edit',description:'编辑文件的指定部分。登录用户编辑个人文件夹文件，访客编辑 guest/ 文件夹文件。对于修改大文件中的特定段落，此工具比 write 更高效。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},old_string:{type:'string',description:'要替换的原始文本'},new_string:{type:'string',description:'替换后的新文本'},replace_all:{type:'boolean',description:'是否替换所有匹配项',default:false}},required:['file_path','old_string','new_string']}}},
+  {type:'function',function:{name:'AskUserQuestion',description:'当需要用户提供更多信息或做出选择时，向用户提问。',parameters:{type:'object',properties:{question:{type:'string',description:'要询问用户的问题'},options:{type:'array',items:{type:'string'},description:'可选的选择项（最多4个）'}},required:['question']}}},
+  {type:'function',function:{name:'web_fetch',description:'抓取外部网页内容，返回文本内容。适用于阅读在线文档、API文档等。',parameters:{type:'object',properties:{url:{type:'string',description:'目标网页URL'},max_chars:{type:'integer',description:'最大抓取字符数',default:50000}},required:['url']}}}
+];
+
+// ── Proxy Request ──
+async function proxyRequest(provider,apiPath,body,timeoutMs=90000){
+  if(stopRequested)throw new DOMException('The operation was aborted.','AbortError');
+  const requestBody={_token:accessToken,_provider:provider,_path:apiPath,...body};
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(new DOMException('代理请求超时 ('+timeoutMs/1000+'s)','TimeoutError')),timeoutMs);
+  if(abortController)abortController.signal.addEventListener('abort',()=>{clearTimeout(timer);ctrl.abort(abortController.signal.reason);},{once:true});
+  try{
+    const resp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest'},body:JSON.stringify(requestBody),signal:ctrl.signal});
+    clearTimeout(timer);
+    if(!resp.ok){const errText=await resp.text().catch(()=>'Unknown error');throw new Error('代理错误 ('+resp.status+'): '+errText.slice(0,300));}
+    return resp.json();
+  }catch(e){clearTimeout(timer);throw e;}
+}
+
+// ── Tool Handlers ──
+const toolHandlers={
+  async web_search(args,ctx){
+    if(_webSearchQuotaExhausted)return '网络搜索暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
+    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'system',content:'你是一个搜索助手。以JSON格式返回：{"results":[{"title":"标题","url":"链接","snippet":"摘要"}]}。不要使用工具调用，直接返回JSON。'},{role:'user',content:args.query}],temperature:.3,max_tokens:2048});
+    let content=data.choices?.[0]?.message?.content||'';
+    content=content.replace(/<thinking>[\s\S]*?<\/thinking>/g,'').trim();
+    const jsonMatch=content.match(/\{[^]*"results"[^]*\}/);
+    if(jsonMatch)return JSON.stringify(JSON.parse(jsonMatch[0]).results,null,2);
+    return content;
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_webSearchQuotaExhausted=true;return '网络搜索失败，所有 API Key 配额已用尽';}return '搜索出错: '+e.message;}
+  },
+  async vision_recognition(args,ctx){
+    // 通过服务器代理下载图片（解决 MiniMax 无法访问站内/私有 URL 的问题）
+    if(_visionQuotaExhausted)return '图像识别暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    let imgUrl=args.image_url;
+    try{
+      const proxyImg=await apiCall('image_proxy',{url:args.image_url});
+      if(proxyImg.success&&proxyImg.data_url)imgUrl=proxyImg.data_url;
+    }catch(e){/* 回退：直接用原始 URL */}
+    try{
+    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'user',content:[{type:'text',text:args.question||'这张图片里有什么？'},{type:'image_url',image_url:{url:imgUrl}}]}],max_tokens:1024});
+    return data.choices?.[0]?.message?.content||'无识别结果';
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_visionQuotaExhausted=true;return '图像识别失败，所有 API Key 配额已用尽';}return '图像识别出错: '+e.message;}
+  },
+  async image_generation(args,ctx){
+    if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
+    const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:args.aspect_ratio||'1:1',n:args.n||1,response_format:'url'};if(args.seed)imgBody.seed=args.seed;if(args.prompt_optimizer)imgBody.prompt_optimizer=true;if(args.width&&args.height){imgBody.width=args.width;imgBody.height=args.height;delete imgBody.aspect_ratio;}if(args.aigc_watermark)imgBody.aigc_watermark=true;const data=await proxyRequest('minimax','/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
+    const urls=data.data?.image_urls||[];
+    const failed=data.data?.failed_count||0;
+    if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张失败)';
+    if(!urls.length)return '未生成图像';
+    if(failed>0)addStepMessage('⚠️ '+failed+'张图片生成失败');
+    for(const url of urls){const f=await saveMediaToUser(url,'images','jpg');if(f)addAgentMessage('📁 已保存: '+f,'image');}
+    return JSON.stringify(urls);
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_imageQuotaExhausted=true;return '图片生成失败，所有 API Key 配额已用尽';}return '图片生成出错: '+e.message;}
+  },
+  async video_generation(args,ctx){
+    // 会话级配额耗尽保护：阻止 AI 在配额恢复前重复调用
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    addStepMessage('🎬 开始生成视频（T2V文生视频/Hailuo-2.3），预计1-2分钟...');
+    // 按 mmx-cli 参数模型构建请求体：仅含 MiniMax API 支持的字段
+    const vidBody={model:'MiniMax-Hailuo-2.3',prompt:args.prompt};
+    if(args.first_frame_image)vidBody.first_frame_image=args.first_frame_image;
+    if(args.last_frame_image&&args.first_frame_image){vidBody.last_frame_image=args.last_frame_image;vidBody.model='MiniMax-Hailuo-02';}
+    if(args.subject_image){vidBody.subject_reference=[{type:'character',image:[args.subject_image]}];vidBody.model='S2V-01';}
+    addStepMessage('🎬 已提交视频任务，等待生成...');
+    // 当所有 Key 耗尽时自动重试（最多 2 次）
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+    // Step 1: 异步提交
+    const createResp=await proxyRequest('minimax','/video_submit',vidBody,30000);
+    if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交...');await new Promise(r=>setTimeout(r,5000));continue;}
+    if(createResp.error)return '视频生成启动失败: '+createResp.message;
+    const taskId=createResp.task_id;if(!taskId)return '视频生成失败：未获取到任务ID';
+    // Step 2: 轮询等待结果（最多等 3 分钟，指数退避 3s→10s, 与音乐生成一致）
+    const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
+    while(Date.now()-start<MAX_WAIT){
+      await new Promise(r=>setTimeout(r,delay));if(stopRequested)return '操作已取消';
+      const pollResp=await proxyRequest('minimax','/video_poll',{task_id:taskId},15000);
+      if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+      lastResp=pollResp;break;
+    }
+    if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await new Promise(r=>setTimeout(r,3000));continue;}return '视频生成超时，请稍后重试';}
+    // Key 全部耗尽？自动重试提交
+    if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+      _videoQuotaExhausted=true;
+      if(retry<2){addStepMessage('🔄 Key 配额耗尽，重新提交（第'+(retry+1)+'次重试）...');await new Promise(r=>setTimeout(r,5000));continue;}
+      return '视频生成失败，所有 API Key 配额已用尽，已自动禁止后续调用。请在午夜 UTC+8 后刷新页面重试'+(lastResp.message?': '+lastResp.message:'');
+    }
+    if(lastResp.error)return '视频生成失败: '+(lastResp.message||lastResp.error);
+    const br_v=lastResp.base_resp||{};
+    if(br_v.status_code&&br_v.status_code!==0)return '视频生成失败: '+(br_v.status_msg||'错误码 '+br_v.status_code);
+    let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
+    if(!url&&lastResp.file_id){try{const fi=await proxyRequest('minimax','/files/retrieve?file_id='+lastResp.file_id,{});url=fi.file?.download_url||fi.download_url||'';}catch(e){}}
+    if(url){const f=await saveMediaToUser(url,'videos','mp4');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+    return '视频生成完成但无URL'+(lastResp._http_code?' (HTTP '+lastResp._http_code+')':'');
+    } // end retry loop
+    return '视频生成失败，多次重试后未获取到有效结果';
+  },
+  async music_generation(args,ctx){
+    if(_musicQuotaExhausted)return '音乐生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
+    // 官方 SDK 做法：genre/mood/vocals 等结构化参数折叠进 prompt
+    const structured=[];
+    if(args.genre)structured.push('Genre: '+args.genre);
+    if(args.mood)structured.push('Mood: '+args.mood);
+    if(args.vocals)structured.push('Vocals: '+args.vocals);
+    if(args.instruments)structured.push('Instruments: '+args.instruments);
+    if(args.tempo)structured.push('Tempo: '+args.tempo);
+    if(args.bpm)structured.push('BPM: '+args.bpm);
+    if(args.key)structured.push('Key: '+args.key);
+    const fullPrompt=structured.length>0?(args.prompt?args.prompt+'. '+structured.join('. '):structured.join('. ')):args.prompt;
+    const body={model:'music-2.6',prompt:fullPrompt};if(args.lyrics)body.lyrics=args.lyrics;if(args.instrumental)body.is_instrumental=true;else if(!args.lyrics&&!args.lyrics_optimizer)body.is_instrumental=true;if(args.lyrics_optimizer)body.lyrics_optimizer=true;body.audio_setting={format:'mp3',sample_rate:44100,bitrate:256000};body.output_format='url';
+    // Step 1: 异步创建音乐任务（proxy.php 立即返回 task_id，后台 worker 慢慢等 MiniMax）
+    const createResp=await proxyRequest('minimax','/music_generation',body,30000);
+    if(createResp.error)return '音乐生成启动失败: '+createResp.message;
+    const taskId=createResp.task_id;
+    if(!taskId)return '音乐生成失败：未获取到任务ID';
+    // Step 2: 轮询等待结果（最多等 180s，避免 504）
+    const start=Date.now();
+    const MAX_WAIT=180000;
+    let delay=3000;
+    let lastResp=null;
+    while(Date.now()-start<MAX_WAIT){
+      await new Promise(r=>setTimeout(r,delay));
+      if(stopRequested)return '操作已取消';
+      const pollResp=await proxyRequest('minimax','/music_poll',{task_id:taskId},15000);
+      if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+      // 有结果了（成功或失败）
+      lastResp=pollResp;
+      break;
+    }
+    if(!lastResp)return '音乐生成超时（3分钟），请稍后重试';
+    if(lastResp.error){
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){_musicQuotaExhausted=true;return '音乐生成失败，所有 API Key 配额已用尽';}
+      return '音乐生成失败: '+(lastResp.message||lastResp.error);
+    }
+    const br_m=lastResp.base_resp||{};
+    if(br_m.status_code&&br_m.status_code!==0)return '音乐生成失败: '+(br_m.status_msg||'错误码 '+br_m.status_code);
+    const url=lastResp.audio_url||lastResp.data?.audio_url||lastResp.data?.audio||'';
+    if(url){const f=await saveMediaToUser(url,'music','mp3');if(f){addAgentMessage('📁 已保存: '+f,'music');const su=await getShareUrl(f);if(su)return su;}return url;}
+    return '音乐生成失败，请检查输入描述或稍后重试';
+    }catch(e){if(e.name==='AbortError')throw e;return '音乐生成出错: '+e.message;}
+  },
+  async text_to_speech(args,ctx){
+    if(_ttsQuotaExhausted)return '语音生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    try{
+      const data=await proxyRequest('minimax','/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:args.speed||1.0},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
+      const baseResp=data.base_resp||{};
+      if(baseResp.status_code&&baseResp.status_code!==0){
+        const errMsg=baseResp.status_msg||'未知错误';
+        return '语音生成失败: '+errMsg+'。可用音色: female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), female-tianmei(甜美), male-qn-qingse(青年男声), male-shaoshuai(少帅), male-zhixing(磁性), female-zhixing(知性), male-jingpin(精品男声), female-jingpin(精品女声)';
+      }
+      const url=data.audio_url||data.data?.audio_url||data.data?.audio||'';
+      if(url){const f=await saveMediaToUser(url,'voice','mp3');if(f){addAgentMessage('📁 已保存: '+f,'voice');const su=await getShareUrl(f);if(su)return su;}return url;}
+      return '语音生成完成但未获取到音频URL，API响应结构: '+JSON.stringify(data).slice(0,300);
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_ttsQuotaExhausted=true;return '语音生成失败，所有 API Key 配额已用尽';}return '语音生成出错: '+e.message;}
+  },
+  async bash(args,ctx){
+    try{
+      const res=await apiCall('bash',{command:args.command,timeout:args.timeout||30});
+      if(res.error)return '执行失败: '+res.error;
+      let out='';
+      if(res.stdout)out+='📤 STDOUT:\n'+res.stdout;
+      if(res.stderr)out+=(out?'\n\n':'')+'📥 STDERR:\n'+res.stderr;
+      if(res.exitCode!==0)out+='\n\n⚠️ 退出码: '+res.exitCode;
+      return out||'(无输出)';
+    }catch(e){if(e.name==='AbortError')throw e;return '执行出错: '+e.message;}
+  },
+  async read(args,ctx){
+    try{
+      const fp=currentUser?args.file_path:restrictPath(args.file_path);
+      const res=await apiCall('file_read',{file_path:fp,offset:args.offset,limit:args.limit});return res.content;}
+    catch(e){if(e.name==='AbortError')throw e;return '读取失败: '+e.message;}
+  },
+  async write(args,ctx){
+    try{
+      // 自动归类：裸文件 → 临时文件(tmp_/temp_开头)放到 tmp/，其他放到 project/
+      let fp=args.file_path;
+      if(!fp.includes('/')){
+        const baseName=fp.replace(/\.[^.]+$/,'');
+        if(/^tmp_/i.test(baseName)||/^temp_/i.test(baseName)){
+          fp='tmp/'+fp;
+        }else{
+          fp='project/'+baseName+'/'+fp;
+        }
+      }
+      const fpFinal=currentUser?fp:restrictPath(fp);
+      const res=await apiCall('file_write',{file_path:fpFinal,content:args.content});if(currentUser)await fetchQuota();return res.message;}
+    catch(e){if(e.name==='AbortError')throw e;return '写入失败: '+e.message;}
+  },
+  async edit(args,ctx){
+    try{
+      const fp=currentUser?args.file_path:restrictPath(args.file_path);
+      const res=await apiCall('file_edit',{file_path:fp,old_string:args.old_string,new_string:args.new_string,replace_all:args.replace_all});if(currentUser)await fetchQuota();return res.message;}
+    catch(e){if(e.name==='AbortError')throw e;return '编辑失败: '+e.message;}
+  },
+  async AskUserQuestion(args,ctx){
+    const{question,options}=args;
+    let msg='🤔 **'+question+'**\n';
+    if(options&&options.length){msg+='\n请选择：\n';options.forEach((opt,i)=>msg+=(i+1)+'. '+opt+'\n');}
+    return{displayText:msg,awaitUserResponse:true,metadata:{question,options}};
+  },
+  async web_fetch(args,ctx){
+    try{
+      const res=await apiCall('web_fetch',{url:args.url,max_chars:args.max_chars||50000});
+      if(res.error)return '抓取失败: '+res.error;
+      return '📄 来自 '+res.url+' (HTTP '+res.httpCode+', '+res.length+' 字符)\n\n'+res.content;
+    }catch(e){if(e.name==='AbortError')throw e;return '抓取出错: '+e.message;}
+  }
+};
+
+// ── Tool Executor ──
+class EnhancedToolExecutor{
+  constructor(){this.handlers=toolHandlers;}
+  async executeToolCalls(sessionId,toolCalls,messages){
+    const results=[];
+    for(const call of toolCalls){
+      if(stopRequested)break;
+      const{id,function:{name,arguments:argsJson}}=call;let args;
+      try{args=JSON.parse(argsJson);}catch{results.push({role:'tool',tool_call_id:id,content:'参数解析失败'});continue;}
+      const handler=this.handlers[name];
+      if(!handler){results.push({role:'tool',tool_call_id:id,content:'未注册的工具: '+name});continue;}
+      addStepMessage('调用工具: '+name+'('+JSON.stringify(args).slice(0,60)+'...)');
+      try{
+        const result=await handler(args,{sessionId,toolCall:call,messages});
+        if(result&&result.awaitUserResponse){
+          addAgentMessage(result.displayText,name);
+          results.push({role:'tool',tool_call_id:id,content:JSON.stringify({question:args.question,options:args.options}),awaitUserResponse:true});
+          return{results,awaitingUser:true,questionData:result.metadata};
+        }
+        const content=typeof result==='string'?result:JSON.stringify(result);
+        const MAX_TOOL_CONTENT=51200;if(content.length>MAX_TOOL_CONTENT){addStepMessage('⚠️ 工具结果过长 ('+(content.length/1024).toFixed(0)+'KB)，已截断');}
+        const truncated=content.length>MAX_TOOL_CONTENT?content.slice(0,MAX_TOOL_CONTENT)+'\n\n[...截断 '+(content.length-MAX_TOOL_CONTENT)+' 字符]':content;
+        let showImage=false;
+        try{const parsed=JSON.parse(content);if(Array.isArray(parsed)&&parsed.length>0&&typeof parsed[0]==='string'&&parsed[0].match(/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i)){addAgentMessage('',name);parsed.forEach(url=>addImageMessage(url));showImage=true;}}catch{}
+        if(!showImage&&typeof content==='string'&&content.match(/^https?:\/\/.+\.(jpe?g|png|gif|webp|bmp)(\?|$)/i)){addAgentMessage('',name);addImageMessage(content);showImage=true;}
+        if(!showImage){addAgentMessage('工具 '+name+' 返回结果',name);}
+        results.push({role:'tool',tool_call_id:id,content:truncated});
+      }catch(e){if(e.name==='AbortError')throw e;results.push({role:'tool',tool_call_id:id,content:'执行错误: '+e.message});}
+    }
+    return{results,awaitingUser:false};
+  }
+}
+
+const executor=new EnhancedToolExecutor();
+
+// ── 媒体文件自动保存到用户或访客文件夹 ──
+async function saveMediaToUser(url,folder,ext){
+  try{
+    const res=await apiCall('file_save_from_url',{url:url,folder:folder});
+    if(!res.success||!res.file){addStepMessage('⚠️ 文件保存失败: '+(res.error||'未知错误'));return null;}
+    if(currentUser)fetchQuota();
+    return res.file;
+  }catch(e){addStepMessage('⚠️ 文件保存失败: '+e.message);return null;}
+}
+
+// 生成分享链接（替代 MiniMax 会过期的 CDN 直链）
+async function getShareUrl(filePath){
+  if(!filePath)return null;
+  try{
+    const resp=await fetch(PROXY_URL,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({_action:'generate_share_link',file_path:filePath,_token:accessToken})
+    });
+    const d=await resp.json();
+    return d.share_url||null;
+  }catch(e){return null;}
+}
+
+// ── 系统提示词 ──
+function buildSystemPrompt(){
+  const username=currentUser?currentUser.username:'访客';
+  if(currentUser){
+    return 'You are an interactive CLI tool...当前登录用户: '+username+'\n用户的所有文件操作（read/write/edit）都限定在其服务器个人文件夹内。\n用户拥有 '+(username==='admin'?'1GB':'100MB')+' 的存储配额。\n\n## 文件目录存放规则（请严格遵守）\n个人文件夹包含以下子目录，各类文件必须存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 project/项目名/，如 project/贪吃蛇游戏/snake.html、project/计算器/main.py |\n| tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出，如 tmp/debug.log、tmp/分析数据.json |\n| files/ | 📄 通用文档 | 笔记、配置、通用文本，非项目非临时的文件放这里，如 files/笔记.txt、files/配置.json |\n| images/ | 🖼 图片 | 系统自动保存（image_generation 生成的图片），无需手动指定 |\n| videos/ | 🎬 视频 | 系统自动保存（video_generation 生成的视频），无需手动指定 |\n| music/ | 🎵 音乐 | 系统自动保存（music_generation 生成的音乐），无需手动指定 |\n| voice/ | 🎤 语音 | 系统自动保存（text_to_speech 生成的语音），无需手动指定 |\n| memory/ | 🧠 记忆数据 | 记忆系统专用，请勿手动修改 |\n\n**重要：** 创建项目时，务必先建立 project/项目名/ 子文件夹，所有该项目文件存于其内，不得分散存放。\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取用户个人文件夹中的文件\n- write: 写入文件（项目→project/项目名/，临时→tmp/，通用→files/）\n- edit: 编辑用户个人文件夹中的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容（参数: url=目标网址, max_chars=最大字符数默认50000）\n\n注意：bash 工具在虚拟主机上不可用（php 执行函数被禁用），请勿尝试使用。文件操作和网页抓取不受影响。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL+'\n\n请根据用户需求，合理选择工具。最终请用友好的语气总结给用户。';
+  }else{
+    return 'You are an interactive CLI tool...当前用户: 访客 (未登录)\n【安全限制】所有文件操作（read/write/edit）严格限定在访客文件夹 (guest/) 内。\n访客生成的媒体文件会自动保存到服务器（共享 guest/ 文件夹，所有访客共用）。\n\n## 文件目录存放规则（请严格遵守）\n访客文件夹内包含以下子目录，各类文件必须存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| guest/project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 guest/project/项目名/ |\n| guest/tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出 |\n| guest/files/ | 📄 通用文档 | 笔记、配置、通用文本 |\n| guest/images/ | 🖼 图片 | 自动保存（共享guest/，所有访客共用） |\n| guest/videos/ | 🎬 视频 | 自动保存 |\n| guest/music/ | 🎵 音乐 | 自动保存 |\n| guest/voice/ | 🎤 语音 | 自动保存 |\n| guest/memory/ | 🧠 记忆数据 | 记忆系统专用（访客模式不可用） |\n\n**重要：** 创建项目时，务必先建立 guest/project/项目名/ 子文件夹，所有该项目文件存于其内。\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取访客文件夹中的文件（仅限 guest/ 目录）\n- write: 写入文件（项目→guest/project/项目名/，临时→guest/tmp/，通用→guest/files/）\n- edit: 编辑访客文件夹中的文件（仅限 guest/ 目录，优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容\n\n注意：bash 工具在虚拟主机上不可用（php 执行函数被禁用），请勿尝试使用。文件操作和网页抓取不受影响。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL+'\n\n请根据用户需求，合理选择工具。最终请用友好的语气总结给用户。';
+  }
+}
+
+// ── Agent Loop ──
+async function runAgentLoop(userMessage){
+  if(abortController)abortController.abort();
+  abortController=new AbortController();
+  stopRequested=false;
+  setRunning(true);
+  addUserMessage(userMessage);
+  let messages;
+  if(currentSession.awaitingUser){
+    messages=currentSession.messages;
+    messages.push({role:'tool',tool_call_id:currentSession.pendingToolCallId||'call_ask',content:userMessage});
+    currentSession.awaitingUser=false;
+    addStepMessage('收到用户回答，继续执行...');
+  }else{
+    // ── 记忆注入：在构建系统提示前检索相关记忆 ──
+    let memoryContext='';
+    if(currentUser&&accessToken){
+      addStepMessage('正在检索相关记忆...');
+      memoryContext=await fetchMemoryContext(userMessage);
+      if(memoryContext){
+        addStepMessage('找到相关记忆，已注入上下文');
+      }else{
+        addStepMessage('未找到相关记忆');}
+    }
+    const basePrompt=buildSystemPrompt();
+    const enrichedPrompt=memoryContext?basePrompt+'\n\n[记忆上下文]\n以下是之前与该用户的对话中提取的记忆，参考这些记忆更能理解用户背景：\n'+memoryContext:basePrompt;
+    // 继承上次会话上下文：保存旧system prompt替换为新prompt，追加新消息
+    messages=(currentSession.messages&&currentSession.messages.length>=2)
+      ? [{role:'system',content:enrichedPrompt},...currentSession.messages.slice(1),{role:'user',content:userMessage}]
+      : [{role:'system',content:enrichedPrompt},{role:'user',content:userMessage}];
+    // 记录用户消息用于后续提取
+    recentConversationMessages.push({role:'user',content:userMessage,time:Date.now()});
+  }
+  const MAX_LOOPS=10;let loopCount=0;let consecutiveFailures=0;
+  try{
+  while(loopCount<MAX_LOOPS){
+    loopCount++;
+    if(stopRequested){addStepMessage('⏹ 已停止');break;}
+    if(TokenEstimator.needsCompaction(messages,'deepseek-v4-flash')){messages=await compactContext(messages,proxyRequest);}
+    addStepMessage('Agent 循环 #'+loopCount+'：正在调用 deepseek-v4-flash...');
+    const thinkingOpts=ThinkingModeHandler.buildThinkingOptions(true,'max');
+    let llmResponse;
+    // LLM 调用重试：最多 3 次，指数退避（2s→4s→8s），应对网络波动
+    for(let llmRetry=0;llmRetry<3;llmRetry++){
+      try{llmResponse=await proxyRequest(CHAT_PROVIDER,'/chat/completions',{model:'deepseek-v4-flash',messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:6144,...thinkingOpts});break;}
+      catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
+        if(llmRetry>=2){addAgentMessage('❌ 调用模型失败（已重试3次）: '+e.message);setRunning(false);return;}
+        const d=Math.min(2000*Math.pow(2,llmRetry),10000);
+        addStepMessage('⚠️ 模型调用失败，'+d/1000+'秒后重试...');await new Promise(r=>setTimeout(r,d));}
+    }
+    if(stopRequested){addStepMessage('⏹ 已停止');break;}
+    const choice=llmResponse.choices?.[0];
+    if(!choice){addAgentMessage('模型返回异常');setRunning(false);return;}
+    // BUG-05: 检测截断
+    if(choice.finish_reason==='length'){
+      addStepMessage('⚠️ 响应被截断（已达 max_tokens 上限），内容可能不完整');
+    }
+    const{message}=choice;
+    const reasoning=ThinkingModeHandler.extractReasoning(message);
+    if(reasoning)addStepMessage('推理: '+reasoning.slice(0,150)+'...');
+    if(stopRequested){addStepMessage('⏹ 已停止');break;}
+    if(!message.tool_calls||message.tool_calls.length===0){
+      // 记录AI回复用于后续提取
+      recentConversationMessages.push({role:'assistant',content:message.content||'',time:Date.now()});
+      addAgentMessage(message.content||message.reasoning_content||'(无内容)');break;
+    }
+    const toolCalls=message.tool_calls;
+    addStepMessage('模型请求调用 '+toolCalls.length+' 个工具');
+    messages.push({role:'assistant',content:message.content||'',tool_calls:toolCalls,...(message.reasoning_content?{reasoning_content:message.reasoning_content}:{})});
+    const{results,awaitingUser}=await executor.executeToolCalls('session-1',toolCalls,messages);
+    if(stopRequested){addStepMessage('⏹ 已停止');break;}
+    if(awaitingUser){messages.push(...results.filter(r=>!r.awaitUserResponse));currentSession.messages=messages;currentSession.awaitingUser=true;currentSession.pendingToolCallId=toolCalls[0]?.id;addStepMessage('等待用户回答...');setRunning(false);return;}
+    // 检查本轮工具是否全部失败
+    const allFailed=results.length>0&&results.every(r=>typeof r.content==='string'&&(r.content.startsWith('执行错误')||r.content.startsWith('执行失败')||r.content.startsWith('未注册')));
+    if(allFailed&&toolCalls.length>0){consecutiveFailures++;addStepMessage('⚠️ 本轮 '+toolCalls.length+' 个工具全部执行失败（连续 '+consecutiveFailures+' 轮）');if(consecutiveFailures>=2){addAgentMessage('工具连续执行失败，已停止。');break;}}else{consecutiveFailures=0;}
+    messages.push(...results);
+  }
+  if(loopCount>=MAX_LOOPS)addAgentMessage('达到最大循环次数，已停止。');
+  }catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');}else{addAgentMessage('❌ 错误: '+e.message);}}
+  // ── 对话结束后异步触发记忆提取（仅增量）──
+  if(currentUser&&recentConversationMessages.length>=2){
+    const newMsgs=getUnprocessedMessages();
+    if(newMsgs.length>=2)triggerMemoryExtraction(newMsgs);
+  }
+  setRunning(false);currentSession.messages=messages;currentSession.awaitingUser=false;abortController=null;
+  // BUG-04: 执行完毕后自动处理队列中的下一条命令
+  if(commandQueue.length>0)processQueue();
+}
+
+// ── File Manager ──
+async function openFileManager(){
+  document.getElementById('fmOverlay').classList.remove('hidden');
+  await loadFileList('');
+}
+function closeFileManager(){
+  document.getElementById('fmOverlay').classList.add('hidden');
+}
+async function loadFileList(path){
+  const body=document.getElementById('fmBody');
+  body.innerHTML='<div class="fm-loading">📂 加载中...</div>';
+  fmCurrentPath=path;
+  try{
+    const [res,quotaRes]=await Promise.all([
+      apiCall('list_files',{path}),
+      apiCall('quota')
+    ]);
+    renderFileList(res.files||[],res.currentPath||'');
+    renderQuota(quotaRes.usedBytes||0,currentUser?.username==='admin'?1000:(quotaRes.quotaMB||100));
+  }catch(e){
+    body.innerHTML='<div class="fm-empty">❌ 加载失败: '+escapeHtml(e.message)+'</div>';
+  }
+}
+function renderFileList(files,currentPath){
+  const body=document.getElementById('fmBody');
+  const bc=document.getElementById('fmBreadcrumb');
+  const uname=currentUser?currentUser.username:'访客';
+  // Breadcrumb
+  let bcHtml='<span class="fm-bc-link" data-bc-path="">📁 '+escapeHtml(uname)+'</span>';
+  if(currentPath){
+    const parts=currentPath.split('/');
+    let acc='';
+    parts.forEach((p,i)=>{
+      acc+= (i>0?'/':'')+p;
+      bcHtml+='<span class="sep">›</span><span class="fm-bc-link" data-bc-path="'+escapeHtmlAttr(acc)+'">'+escapeHtml(p)+'</span>';
+    });
+  }
+  bc.innerHTML=bcHtml;
+  // File list
+  if(!files||files.length===0){
+    body.innerHTML='<div class="fm-empty">📂 <span>文件夹为空</span></div>';
+    return;
+  }
+  let html='';
+  files.forEach(f=>{
+    const icon=f.is_dir?'📁':'📄';
+    const sizeStr=f.is_dir?('('+f.file_count+'项)'):formatSize(f.size);
+    const encPath=encodeURIComponent(f.path);
+    html+='<div class="fm-item'+(f.is_dir?' fm-item-dir':' fm-item-file')+'" data-path="'+escapeHtmlAttr(f.path)+'">'
+      +'<span class="fm-item-icon">'+icon+'</span>'
+      +'<span class="fm-item-name" data-path="'+escapeHtmlAttr(f.path)+'">'+escapeHtml(f.name)+'</span>'
+      +'<span class="fm-item-size">'+sizeStr+'</span>'
+      +'<span class="fm-item-mtime">'+escapeHtml(f.mtime||'')+'</span>'
+      +'<span class="fm-item-actions">'
+      +(f.is_dir?'':'<button class="fm-item-action share fm-action-share" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="分享链接">🔗</button>')+(f.is_dir&&!currentPath&&['files','images','music','videos','voice','project','memory','tmp'].includes(f.name)?'':'<button class="fm-item-action del fm-action-delete" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="删除">🗑️</button>')
+      +'</span></div>';
+  });
+  body.innerHTML=html;
+  currentFileList=files||[];
+}
+function renderQuota(usedBytes,quotaMB){
+  const footer=document.getElementById('fmFooter');
+  const usedMB=roundByteToMB(usedBytes||0);
+  const pct=quotaMB>0?Math.min(100,Math.round((usedBytes||0)/(quotaMB*1024*1024)*100)):0;
+  footer.innerHTML='<div class="fm-quota-text">已用: '+usedMB+'MB / '+quotaMB+'MB ('+pct+'%)</div><div class="fm-quota-bar"><div class="fm-quota-fill" style="width:'+pct+'%"></div></div>';
+}
+function roundByteToMB(bytes){return (bytes/(1024*1024)).toFixed(1);}
+function formatSize(bytes){
+  if(bytes===0) return '0B';
+  if(bytes<1024) return bytes+'B';
+  if(bytes<1024*1024) return (bytes/1024).toFixed(1)+'KB';
+  return (bytes/(1024*1024)).toFixed(1)+'MB';
+}
+function escapeHtmlAttr(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+// ── Image Viewer with swipe navigation ──
+// 预加载邻近图片缓存
+function preloadAdjacent(index){
+  for(const offset of [1, -1]){
+    const idx=index+offset;
+    if(idx>=0&&idx<ivImageList.length){
+      const img=new Image();
+      img.src=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(ivImageList[idx].path)+'&_token='+accessToken;
+    }
+  }
+}
+
+var ivLoadTimer=null;
+function showImage(index){
+  if(!ivImageList||index<0||index>=ivImageList.length)return;
+  ivImageIndex=index;
+  const f=ivImageList[index];
+  ivCurrentFile=f;
+  ivName.textContent=f.name+'  ('+(index+1)+'/'+ivImageList.length+')';
+  // 每次重新创建 DOM（避免关闭时清空导致孤儿节点）
+  ivContainer.innerHTML='<div class="iv-prev" id="ivPrev">‹</div><div class="iv-next" id="ivNext">›</div><div id="ivLoading" style="position:absolute;color:rgba(255,255,255,.4);font-size:13px;padding:30px;pointer-events:none">⏳ 加载中...</div><img src="" alt="" id="ivImg">';
+  window._ivPrev=document.getElementById('ivPrev');
+  window._ivNext=document.getElementById('ivNext');
+  window._ivImg=document.getElementById('ivImg');
+  window._ivLoading=document.getElementById('ivLoading');
+  window._ivPrev.onclick=function(e){e.stopPropagation();showImage(ivImageIndex-1);};
+  window._ivNext.onclick=function(e){e.stopPropagation();showImage(ivImageIndex+1);};
+  window._ivImg.onload=function(){
+    if(window._ivLoading)window._ivLoading.style.display='none';
+    window._ivImg.style.opacity='1';
+    if(ivLoadTimer){clearTimeout(ivLoadTimer);ivLoadTimer=null;}
+  };
+  window._ivImg.onerror=function(){
+    if(window._ivLoading)window._ivLoading.textContent='❌ 加载失败';
+    if(ivLoadTimer){clearTimeout(ivLoadTimer);ivLoadTimer=null;}
+  };
+  window._ivPrev.style.display='';window._ivNext.style.display='';
+  if(ivImageList.length<=1){window._ivPrev.style.display='none';window._ivNext.style.display='none';}
+  // 加载态
+  if(window._ivLoading){window._ivLoading.style.display='block';window._ivLoading.textContent='⏳ 加载中...';}
+  window._ivImg.style.opacity='0';
+  // 直接 GET URL（浏览器原生缓存）
+  window._ivImg.src=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f.path)+'&_token='+accessToken;
+  // 超时保护：30秒未加载完成视为失败
+  if(ivLoadTimer)clearTimeout(ivLoadTimer);
+  ivLoadTimer=setTimeout(function(){
+    if(window._ivLoading&&window._ivLoading.style.display!=='none')
+      window._ivLoading.textContent='❌ 加载超时';
+  },30000);
+  preloadAdjacent(index);
+  ivOverlay.classList.remove('hidden');
+}
+function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+async function fmViewFile(path,name){
+  // Check file extension
+  const ext=(name||'').split('.').pop().toLowerCase();
+  const imgExts=['jpg','jpeg','png','gif','webp','bmp','svg','ico','avif'];
+  // 图片文件 — build image list from current folder
+  if(imgExts.includes(ext)){
+    const imgFiles=currentFileList.filter(f=>{
+      const e=f.name.split('.').pop().toLowerCase();
+      return imgExts.includes(e)&&!f.is_dir;
+    });
+    if(imgFiles.length===0){alert('未找到图片文件');return;}
+    ivImageList=imgFiles;
+    const idx=imgFiles.findIndex(f=>f.path===path);
+    showImage(idx>=0?idx:0);
+    return;
+  }
+  // 音频文件 — 在线播放
+  const audioExts=['mp3','wav','ogg','m4a','aac','flac','wma'];
+  if(audioExts.includes(ext)){
+    try{
+      const resp=await fetch(PROXY_URL,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({_action:'file_download',file_path:path,_token:accessToken})
+      });
+      if(!resp.ok){alert('下载失败');return;}
+      const blob=await resp.blob();
+      const url=URL.createObjectURL(blob);
+      // 关闭旧播放器
+      if(ivAbortController){ivAbortController.abort();ivAbortController=null;}
+      ivContainer.innerHTML='<audio controls autoplay style="width:80vw;max-width:500px;border-radius:8px"></audio>';
+      const audio=ivContainer.querySelector('audio');
+      audio.src=url;
+      ivName.textContent='🎵 '+name;
+      ivCurrentFile={path,name};
+      ivOverlay.classList.remove('hidden');
+      // 关闭时释放 blob URL
+      const cleanup=()=>{ivOverlay.classList.add('hidden');ivContainer.innerHTML='';URL.revokeObjectURL(url);ivName.textContent='';ivCurrentFile=null;};
+      ivCloseBtn.onclick=cleanup;
+      ivOverlay.onclick=function(e){if(e.target===ivOverlay)cleanup();};
+    }catch(e){alert('播放失败: '+e.message);}
+    return;
+  }
+  // 视频文件 — 在线播放
+  const videoExts=['mp4','webm','mov','avi','mkv','flv'];
+  if(videoExts.includes(ext)){
+    try{
+      const resp=await fetch(PROXY_URL,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({_action:'file_download',file_path:path,_token:accessToken})
+      });
+      if(!resp.ok){alert('下载失败');return;}
+      const blob=await resp.blob();
+      const url=URL.createObjectURL(blob);
+      if(ivAbortController){ivAbortController.abort();ivAbortController=null;}
+      ivContainer.innerHTML='<video controls autoplay style="max-width:94vw;max-height:82vh;border-radius:8px"></video>';
+      const video=ivContainer.querySelector('video');
+      video.src=url;
+      ivName.textContent='🎬 '+name;
+      ivCurrentFile={path,name};
+      ivOverlay.classList.remove('hidden');
+      const cleanup=()=>{video.pause();ivOverlay.classList.add('hidden');ivContainer.innerHTML='';URL.revokeObjectURL(url);ivName.textContent='';ivCurrentFile=null;};
+      ivCloseBtn.onclick=cleanup;
+      ivOverlay.onclick=function(e){if(e.target===ivOverlay)cleanup();};
+    }catch(e){alert('播放失败: '+e.message);}
+    return;
+  }
+  // Text files — full content in overlay
+  const textExts=['html','htm','txt','md','json','xml','js','jsx','ts','tsx','php','py','css','scss','less','yaml','yml','toml','ini','cfg','conf','env','sh','bash','zsh','ps1','bat','sql','rb','go','rs','java','c','cpp','h','hpp','swift','kt','scala','ex','exs','lua','r','pl','pm','vue','svelte','astro','mjs','cjs','mts','cts','tex','log','csv','tsv'];
+  if(textExts.includes(ext)){
+    try{
+      const res=await apiCall('file_read',{file_path:path,offset:1,limit:999999});
+      const content=res.content||'';
+      ivContainer.innerHTML='<pre style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:8px;font-family:Consolas,Monaco,\'Courier New\',monospace;font-size:13px;line-height:1.5;overflow:auto;max-height:78vh;width:90vw;max-width:900px;white-space:pre-wrap;word-break:break-all;margin:0">'+escHtml(content)+'</pre>';
+      ivName.textContent='📄 '+name+' ('+content.length+' 字符)';
+      ivCurrentFile={path,name};
+      ivOverlay.classList.remove('hidden');
+      const cleanup=()=>{ivOverlay.classList.add('hidden');ivContainer.innerHTML='';ivName.textContent='';ivCurrentFile=null;};
+      ivCloseBtn.onclick=cleanup;
+      ivOverlay.onclick=function(e){if(e.target===ivOverlay)cleanup();};
+    }catch(e){
+      const msg=e.message||'';
+      if(msg.includes('JSON')||msg.includes('json')||msg.includes('Unexpected')) alert('⚠️ 该文件可能不是纯文本。\n文件名: '+name);
+      else alert('读取失败: '+msg);
+    }
+    return;
+  }
+  // Binary / unknown files — quick preview first 50 lines
+  try{
+    const res=await apiCall('file_read',{file_path:path,offset:1,limit:50});
+    const preview=res.content||'';
+    if(confirm('📄 '+name+'\n\n（前50行预览）\n\n'+preview.slice(0,2000)+'\n\n关闭预览？')){}
+  }catch(e){
+    const msg=e.message||'';
+    if(msg.includes('JSON')||msg.includes('json')||msg.includes('Unexpected')) alert('⚠️ 该文件是二进制格式，无法预览文本内容。\n文件名: '+name);
+    else alert('读取失败: '+msg);
+  }
+}
+async function fmDelete(path,name){
+  if(!confirm('确定删除「'+name+'」？')) return;
+  try{
+    const res=await apiCall('file_delete',{file_path:path});
+    if(res.success) await loadFileList(fmCurrentPath);
+    else alert('删除失败: '+ (res.error||'未知错误'));
+  }catch(e){alert('删除失败: '+e.message);}
+}
+async function fmShare(path,name){
+  const ext=(name||'').split('.').pop().toLowerCase();
+  const htmlExts=['html','htm'];
+  // 构造直接文件 URL（文件本身就在网站根目录下，无需通过 proxy）
+  const baseUrl=PROXY_URL.replace('/proxy.php','');
+  const username=currentUser?.username||'guest';
+  const directUrl=baseUrl+'/users/'+encodeURIComponent(username)+'/'+path.split('/').map(s=>encodeURIComponent(s)).join('/');
+  const isHtml=htmlExts.includes(ext);
+  const shareText=isHtml?'🔗 '+name+' — 点击链接直接在浏览器中打开运行':'📄 '+name;
+  const shareTitle=isHtml?name+' — 可直接在浏览器中打开':name;
+  if(navigator.share){
+    try{
+      await navigator.share({url:directUrl,title:shareTitle,text:shareText});
+      return;
+    }catch(e){if(e.name==='AbortError')return;}
+  }
+  // Fallback: copy to clipboard
+  try{
+    await navigator.clipboard.writeText(directUrl);
+    alert(isHtml?'✅ 链接已复制！在浏览器中打开即可运行此 HTML 文件':'✅ 链接已复制到剪贴板');
+  }catch(e2){
+    prompt('复制以下链接分享：',directUrl);
+  }
+}
+// ── Event Binding ──
+loginBtn.addEventListener('click',()=>showModal('login'));
+modalSubmit.addEventListener('click',handleAuth);
+modalSwitch.addEventListener('click',()=>showModal(modalMode==='login'?'register':'login'));
+modalOverlay.addEventListener('click',(e)=>{if(e.target===modalOverlay)hideModal();});
+modalPassword.addEventListener('keypress',(e)=>{if(e.key==='Enter')handleAuth();});
+sendBtn.addEventListener('click',()=>{
+  const text=userInput.value.trim();
+  if(!text)return;
+  userInput.value='';autoResizeInput();stopRequested=false;
+  if(isRunning){
+    commandQueue.push(text);
+    addStepMessage('⏳ 已加入命令队列（队列：'+commandQueue.length+' 条）');
+    return;
+  }
+  runAgentLoop(text);
+});
+userInput.addEventListener('keypress',(e)=>{if(e.key==='Enter'&&!e.shiftKey&&!isRunning){e.preventDefault();sendBtn.click();}});
+userInput.addEventListener('input',autoResizeInput);
+function autoResizeInput(){userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,150)+'px'}
+
+// ── File Manager Events ──
+fmCloseBtn.addEventListener('click',closeFileManager);
+fmOverlay.addEventListener('click',(e)=>{if(e.target===fmOverlay)closeFileManager();});
+// Event delegation for file manager body & breadcrumb
+document.getElementById('fmBody').addEventListener('click',function(e){
+  const t=e.target;
+  // 操作按钮优先
+  if(t.classList.contains('fm-action-delete')){
+    const p=t.getAttribute('data-path');const n=t.getAttribute('data-name');
+    if(p&&n)fmDelete(p,n);
+  }else if(t.classList.contains('fm-action-share')){
+    const p=t.getAttribute('data-path');const n=t.getAttribute('data-name');
+    if(p&&n)fmShare(p,n);
+  }else{
+    // 点击目录行任意位置 → 进入文件夹
+    const dirRow=t.closest('.fm-item-dir');
+    if(dirRow){
+      const p=dirRow.getAttribute('data-path');
+      if(p)loadFileList(p);
+      return;
+    }
+    // 点击文件行任意位置 → 打开/预览
+    const fileRow=t.closest('.fm-item-file');
+    if(fileRow){
+      const p=fileRow.getAttribute('data-path');
+      const nameEl=fileRow.querySelector('.fm-item-name');
+      if(p&&nameEl)fmViewFile(p,nameEl.textContent);
+      return;
+    }
+  }
+});
+document.getElementById('fmBreadcrumb').addEventListener('click',function(e){
+  const t=e.target;
+  if(t.classList.contains('fm-bc-link')){
+    const p=t.getAttribute('data-bc-path');
+    loadFileList(p||'');
+  }
+});
+// ── Share current image via native share sheet ──
+
+function safeRevokeUrl(url){try{URL.revokeObjectURL(url)}catch(e){}}
+async function shareCurrentImage(){
+  const f=ivCurrentFile;
+  if(!f)return;
+  ivShareBtn.textContent='⏳';
+  ivShareBtn.disabled=true;
+  try{
+    const ext=(f.name||'').split('.').pop().toLowerCase();
+    const isImage=['jpg','jpeg','png','gif','webp','bmp','svg','ico','avif'].includes(ext);
+    const isAudio=['mp3','wav','ogg','m4a','aac','flac','wma'].includes(ext);
+    const isVideo=['mp4','webm','mov','avi','mkv','flv'].includes(ext);
+    const icon=isImage?'🖼️':(isAudio?'🎵':(isVideo?'🎬':'📄'));
+    // 构造直接文件 URL
+    const baseUrl=PROXY_URL.replace('/proxy.php','');
+    const username=currentUser?.username||'guest';
+    const directUrl=baseUrl+'/users/'+encodeURIComponent(username)+'/'+f.path.split('/').map(s=>encodeURIComponent(s)).join('/');
+    if(navigator.share){
+      try{
+        await navigator.share({url:directUrl,title:f.name,text:icon+' '+f.name});
+        ivShareBtn.textContent='↗';ivShareBtn.disabled=false;return;
+      }catch(e){if(e.name==='AbortError'){ivShareBtn.textContent='↗';ivShareBtn.disabled=false;return;}}
+    }
+    // Fallback: copy URL to clipboard
+    try{
+      await navigator.clipboard.writeText(directUrl);
+      alert('✅ 链接已复制到剪贴板');
+    }catch(e2){
+      prompt('复制以下链接分享：',directUrl);
+    }
+  }catch(e){}
+  ivShareBtn.textContent='↗';
+  ivShareBtn.disabled=false;
+}
+
+// ── 会话结束：关闭页面或退出时触发记忆提取 ──
+window.addEventListener('beforeunload',function(){
+  if(currentUser&&recentConversationMessages.length>=2){
+    const remainingMsgs=getUnprocessedMessages();
+    if(remainingMsgs.length>=2){
+      navigator.sendBeacon(PROXY_URL,JSON.stringify({
+        _action:'memory',sub_action:'enqueue_extract',
+        messages:remainingMsgs.slice(-10),
+        scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
+        trigger:'session_end',
+        _token:accessToken
+      }));
+    }
+  }
+});
+
+// ── Image Viewer Events ──
+ivCloseBtn.addEventListener('click',function(){ivOverlay.classList.add('hidden');ivName.textContent='';ivCurrentFile=null;ivContainer.innerHTML='';});
+ivShareBtn.addEventListener('click',shareCurrentImage);
+ivOverlay.addEventListener('click',function(e){if(e.target===ivOverlay){ivOverlay.classList.add('hidden');ivName.textContent='';ivCurrentFile=null;ivContainer.innerHTML='';}});
+// Touch swipe for image viewer
+let ivTouchX=0;
+ivContainer.addEventListener('touchstart',function(e){
+  if(ivImageList.length<=1)return;
+  ivTouchX=e.changedTouches[0].screenX;
+},{passive:true});
+ivContainer.addEventListener('touchend',function(e){
+  if(ivImageList.length<=1||ivTouchX===0)return;
+  const dx=e.changedTouches[0].screenX-ivTouchX;
+  if(Math.abs(dx)>50){
+    if(dx<0)showImage(ivImageIndex+1);  // swipe left → next
+    else showImage(ivImageIndex-1);      // swipe right → prev
+  }
+  ivTouchX=0;
+},{passive:true});
+// Keyboard arrow keys for image viewer
+document.addEventListener('keydown',function(e){
+  if(ivOverlay.classList.contains('hidden'))return;
+  if(e.key==='ArrowLeft')showImage(ivImageIndex-1);
+  else if(e.key==='ArrowRight')showImage(ivImageIndex+1);
+  else if(e.key==='Escape'){ivOverlay.classList.add('hidden');ivContainer.innerHTML='';ivName.textContent='';ivCurrentFile=null;}
+});
+
+// ── Debug: expose key state for DevTools ──
+window.__ui2Debug={get currentUser(){return currentUser;},get accessToken(){return accessToken;},get isRunning(){return isRunning;},get currentSession(){return currentSession;},showModal,openFileManager,closeFileManager,runAgentLoop};
+
+// ── Init ──
+(async()=>{
+  try{const res=await apiCall('session');if(res.loggedIn){await loginUser(res.username);}else{updateUIForUser(null);}}
+  catch(e){updateUIForUser(null);}
+  // 访客也需要获取代理令牌才能使用 AI 功能
+  if(!accessToken){
+    try{const tok=await apiCall('get_proxy_token');accessToken=tok.token||'';}catch(e){}
+  }
+  if(accessToken)startPeriodicMemoryExtraction();
+})();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# /etc/cron.d/provider-key-rotation
+# 每日 7:00 自动轮换大模型 API Key（双重保险）
+# 与 Hermes Cron 并行运行，互不依赖
+# 轮换链：opencode-go → opencode-go1 → ... → opencode-go4
+#          minimax key[0]→key[1]→key[2]→key[0]
+0 7 * * * root /bin/bash /root/scripts/rotate-provider-keys.sh >> /root/logs/provider-key-rotation.log 2>&1

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CmdCode 开源源代码</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0d1117;color:#c9d1d9;line-height:1.7}
+.container{max-width:800px;margin:0 auto;padding:40px 20px}
+h1{color:#f0f6fc;font-size:1.5em;margin-bottom:6px}
+.subtitle{color:#8b949e;font-size:0.88em;margin-bottom:30px}
+.file{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:20px;margin-bottom:14px;transition:border-color .2s}
+.file:hover{border-color:#f5a623}
+.file h2{font-size:1.05em;margin-bottom:4px;color:#e6edf3}
+.file h2 .icon{display:inline-block;width:24px}
+.file .meta{color:#484f58;font-size:0.78em;margin-bottom:8px}
+.file .desc{color:#8b949e;font-size:0.85em;margin-bottom:10px;line-height:1.6}
+.file .actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn{display:inline-block;padding:5px 14px;border-radius:6px;font-size:0.78em;font-weight:600;text-decoration:none;transition:all .15s;border:none;cursor:pointer;font-family:inherit}
+.btn-view{background:#1f2937;color:#58a6ff;border:1px solid #30363d}
+.btn-view:hover{background:#58a6ff;color:#000;border-color:#58a6ff}
+.btn-dl{background:#1c2128;color:#8b949e;border:1px solid #30363d}
+.btn-dl:hover{background:#30363d;color:#c9d1d9}
+.tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:0.7em;font-weight:600;margin-right:4px}
+.tag-frontend{background:#1f2937;color:#58a6ff;border:1px solid #30363d}
+.tag-backend{background:#1c2128;color:#7ee787;border:1px solid #30363d}
+.tag-config{background:#1c2128;color:#d2a8ff;border:1px solid #30363d}
+.tag-script{background:#1c2128;color:#f5a623;border:1px solid #30363d}
+.tag-cron{background:#1c2128;color:#ff6b6b;border:1px solid #30363d}
+.tag-security{background:#1c2128;color:#ff6b6b;border:1px solid #30363d}
+.footer{text-align:center;padding:30px;color:#484f58;font-size:0.78em;border-top:1px solid #21262d;margin-top:40px}
+.footer a{color:#58a6ff}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>🔓 CmdCode 开源源代码</h1>
+<p class="subtitle">核心组件完整源代码（脱敏版）— 点击「查看源代码」阅读原始代码</p>
+
+<div class="file">
+<h2><span class="icon">📄</span> ui.html <span class="tag tag-frontend">前端</span></h2>
+<div class="meta">79,992 bytes · 零外部依赖纯前端</div>
+<div class="desc">CmdCode WebUI 完整前端 — 聊天界面、文件管理器、AI Agent 循环、工具调用、MiniMax 多模态集成。纯前端 HTML/CSS/JS，无框架依赖，通过 proxy.php 与后端通信。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=ui.html">📖 查看源代码</a>
+  <a class="btn btn-dl" href="ui.html" target="_blank">⬇ 直接访问</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">⚙️</span> proxy.php <span class="tag tag-backend">后端</span></h2>
+<div class="meta">37,747 bytes · 18个 API Action · ACCESS_TOKEN → <code style="color:#f5a623;font-size:0.85em">__YOUR_ACCESS_TOKEN_HERE__</code></div>
+<div class="desc">多供应商 API 代理 — 解决浏览器 CORS 问题。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go。含用户注册登录、文件系统（1GB配额）、远程 Bash 执行、分享链接、Web 抓取等。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=proxy.php">📖 查看源代码</a>
+  <a class="btn btn-dl" href="proxy.php" target="_blank">⬇ 直接访问</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">🔐</span> config.enc.php <span class="tag tag-config">配置</span></h2>
+<div class="meta">1,988 bytes · PASSPHRASE → <code style="color:#f5a623;font-size:0.85em">__YOUR_RANDOM_SECRET_HERE__</code></div>
+<div class="desc">AES-256-CBC 加密配置 — API Key 的加密存储与解密函数。所有加密 Key 替换为占位符，代码结构完整。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=config.enc.php">📖 查看源代码</a>
+  <a class="btn btn-dl" href="config.enc.php" target="_blank">⬇ 直接访问</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">🛡️</span> htaccess-example <span class="tag tag-security">安全</span></h2>
+<div class="meta">351 bytes · Apache/LiteSpeed 安全规则</div>
+<div class="desc">禁止直接访问 .enc.php 加密配置文件（RedirectMatch 403），禁止访问 .ht* 文件，禁止目录列表。可直接复制使用。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=htaccess-example">📖 查看源代码</a>
+  <a class="btn btn-dl" href="htaccess-example" target="_blank">⬇ 下载</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">🏃</span> long-task-cron-worker.sh <span class="tag tag-script">脚本</span></h2>
+<div class="meta">4,528 bytes · TOKEN → <code style="color:#f5a623;font-size:0.85em">__YOUR_PROXY_ACCESS_TOKEN__</code></div>
+<div class="desc">通用长任务 Cron Worker — 每15秒错峰处理 MiniMax 音乐/视频生成任务。从 proxy.php 拉取 pending 任务，本机调 MiniMax API，写回结果。含 PID 锁防重叠 + 心跳检测。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=long-task-cron-worker.sh">📖 查看源代码</a>
+  <a class="btn btn-dl" href="long-task-cron-worker.sh" target="_blank">⬇ 下载</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">⏰</span> cron.d-long-task-worker <span class="tag tag-cron">Cron</span></h2>
+<div class="meta">411 bytes · sleep 0/15/30/45 错峰</div>
+<div class="desc">系统 crontab 配置 — 每15秒触发一次 long-task-cron-worker.sh，四个错峰实例确保任务快速被处理。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=cron.d-long-task-worker">📖 查看源代码</a>
+  <a class="btn btn-dl" href="cron.d-long-task-worker" target="_blank">⬇ 下载</a>
+</div>
+</div>
+
+<div class="file">
+<h2><span class="icon">📊</span> long-task-worker-check.sh <span class="tag tag-script">脚本</span></h2>
+<div class="meta">640 bytes · 三重检测（crontab + crond + 心跳文件）</div>
+<div class="desc">Worker 健康检查脚本 — 检查 crontab 是否存在、crond 是否运行、心跳文件（120秒阈值）。通过 Hermes Cron 投递到 QQ。</div>
+<div class="actions">
+  <a class="btn btn-view" href="v.php?f=long-task-worker-check.sh">📖 查看源代码</a>
+  <a class="btn btn-dl" href="long-task-worker-check.sh" target="_blank">⬇ 下载</a>
+</div>
+</div>
+
+<div class="footer">
+CmdCode 开源目录 · 源代码已去除所有敏感信息 · 生产文件含真实密钥不上传至此<br>
+<a href="https://github.com/nousresearch/hermes">Hermes Agent</a> · <a href="https://opencode.ai">OpenCode</a> · <a href="https://cmdcode.cn">CmdCode 首页</a>
+</div>
+</div>
+</body>
+</html>

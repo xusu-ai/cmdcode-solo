@@ -1,0 +1,23 @@
+# ── CmdCode Minimax Toolset 安全规则 ──
+
+# 禁止直接访问 .enc.php 加密配置文件
+# 多种方式兜底，兼容 Apache / LiteSpeed
+RedirectMatch 403 \.enc\.php$
+
+# 禁止直接访问 .htaccess 本身
+<FilesMatch "^\.ht">
+  Require all denied
+  Order Allow,Deny
+  Deny from all
+</FilesMatch>
+
+# 禁止目录列表
+Options -Indexes
+
+# 安全响应头
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    Header always set X-XSS-Protection "1; mode=block"
+</IfModule>
