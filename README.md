@@ -116,28 +116,27 @@ AI Agent 会自动处理所有步骤：
 
 ```
 cmdcode-solo/
-├── ui.html                        # 完整前端 Agent，含记忆检索（~91KB）
-├── proxy.php                      # API 代理 + 记忆系统核心（~78KB）
-├── config.enc.php                 # AES-256-CBC 加密配置文件
-├── long-task-cron-worker.sh       # 通用异步 Worker（~16KB）
-├── cron.d-long-task-worker        # Crontab 配置（每15秒错峰运行）
-├── long-task-worker-check.sh      # Worker 健康检查
-├── htaccess-example               # LiteSpeed 安全规则
-├── v.php                          # 源代码查看器
-├── source.html                    # 开源首页元数据
+├── ui.html                        # 完整前端 Agent，含记忆检索（~188KB）
+├── proxy.php                      # API 代理 + 记忆系统核心（~92KB）
+├── config.enc.php                 # AES-256-CBC 加密配置文件（含数据库凭据和 API 密钥）
+├── .htaccess                      # Apache/LiteSpeed 安全规则
+├── .gitignore                     # Git 忽略规则
+├── .gitattributes                 # Git 属性配置
 ├── README.md                      # 中文说明
-└── README_EN.md                   # English README
+├── README_EN.md                   # English README
+└── users/                         # 用户数据目录
+    └── guest/                     # 访客共享数据
+        └── mud/穿越当宰相/        # MUD 游戏数据和配置
 ```
 
 ### 文件详情
 
 | 文件 | 大小 | 描述 |
 |:----|:----|:------|
-| **ui.html** | ~91 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
-| **proxy.php** | ~78 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道 |
-| **config.enc.php** | ~2.5 KB | AES-256-CBC 加密配置，密钥永不落盘 |
-| **long-task-cron-worker.sh** | ~16 KB | Cron 触发的异步任务 Worker，处理 MiniMax 长时音乐/视频生成及 LLM 记忆提取，绕过 PHP-FPM 30s 超时限制，含 3 Key 轮换和 429 检测 |
-| **htaccess-example** | 351 B | LiteSpeed 安全规则：阻止直接访问 `.enc.php`、保护 `.htaccess` 自身 |
+| **ui.html** | ~188 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
+| **proxy.php** | ~92 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道、MUD 游戏引擎 |
+| **config.enc.php** | ~2.5 KB | AES-256-CBC 加密配置，含 MySQL 凭据、ACCESS_TOKEN、API 密钥（密钥永不落盘明文） |
+| **.htaccess** | ~500 B | Apache/LiteSpeed 安全规则：阻止直接访问 `.enc.php` 和隐藏文件，保护 `.htaccess` 自身 |
 
 **记忆相关 DB 表**: `memory_tasks`（任务队列）、`memory_index`（全文索引）
 
@@ -187,7 +186,7 @@ CmdCode Solo 遵循 **极简、单页、零依赖** 的哲学。不依赖任何�
 - 文生图 / 图生图 / TTS / 音乐 / 视频多模态
 - iOS/Android 安全区域适配
 
-核心应用代码（HTML + CSS + JS）约 91KB，适合学习原生 Web 开发或作为轻量级 AI 应用基座。
+核心应用代码（HTML + CSS + JS）约 188KB，适合学习原生 Web 开发或作为轻量级 AI 应用基座。
 
 ---
 
