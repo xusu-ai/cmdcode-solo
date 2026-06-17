@@ -130,17 +130,17 @@ All MiniMax API calls implement automatic triple-key rotation:
 
 ```
 cmdcode-solo/
-├── ui.html                        # Complete frontend Agent with memory retrieval (~91KB)
-├── proxy.php                      # API proxy + memory system core (~78KB)
-├── config.enc.php                 # AES-256-CBC encrypted configuration
-├── long-task-cron-worker.sh       # Universal async Worker (~16KB)
-├── cron.d-long-task-worker        # Crontab config (staggered every 15s)
-├── long-task-worker-check.sh      # Worker health check (~1.7KB)
-├── htaccess-example               # Apache/LiteSpeed security rules
-├── v.php                          # Source code viewer
-├── source.html                    # Open source homepage metadata
+ui.html                        # Full frontend Agent with memory retrieval (~188KB)
+├── proxy.php                      # API proxy + memory system core (~92KB)
+├── config.enc.php                 # AES-256-CBC encrypted configuration (DB creds + API keys)
+├── .htaccess                      # Apache/LiteSpeed security rules
+├── .gitignore                     # Git ignore rules
+├── .gitattributes                 # Git attributes
 ├── README.md                      # 中文说明
-└── README_EN.md                   # English README
+├── README_EN.md                   # English README
+└── users/                         # User data directory
+    └── guest/                     # Guest shared data
+        └── mud/穿越当宰相/        # MUD game data and configs
 ```
 
 ### File Details
@@ -148,10 +148,9 @@ cmdcode-solo/
 | File | Size | Description |
 |:-----|:-----|:------------|
 | **ui.html** | ~91 KB | Frontend chat interface, zero framework dependencies. Built-in AI Agent conversation, file manager, image viewer, audio/video playback, user authentication, multimodal tools (text-to-image/video/music/voice), 3-key rate-limit rotation, session-level quota exhaustion guard |
-| **proxy.php** | ~78 KB | Multi-provider API proxy, solves browser CORS. Supports MiniMax (triple-key rotation failover) and OpenCode Go, includes user auth, file system, memory system, remote Bash, share links, web scraping, full video/music async pipeline |
-| **config.enc.php** | ~2.5 KB | AES-256-CBC encrypted configuration, keys never written to disk |
-| **htaccess-example** | 351 B | Apache/LiteSpeed security rules: blocks direct `.enc.php` access, protects `.htaccess` itself |
-| **long-task-cron-worker.sh** | ~16 KB | Cron-triggered async task worker for long-running MiniMax music/video generation and LLM memory extraction tasks. Bypasses PHP-FPM 30s timeout, implements 3-key rotation with 429 detection |
+| **proxy.php** | ~78 KB | Multi-provider API proxy, solves browser CORS. Supports MiniMax (triple-key rotation failover) and OpenCode Go, includes user auth, file system, memory system, remote Bash, share links, web scraping, full video/music async pipeline, MUD game engine |
+| **config.enc.php** | ~2.5 KB | AES-256-CBC encrypted configuration, contains MySQL credentials, ACCESS_TOKEN, API keys (keys never stored in plaintext) |
+| **.htaccess** | ~500 B | Apache/LiteSpeed security rules: blocks direct `.enc.php` and hidden file access, protects `.htaccess` itself |
 
 **Memory-related DB tables**: `memory_tasks` (task queue), `memory_index` (full-text index)
 
@@ -189,7 +188,7 @@ CmdCode Solo follows the philosophy of **minimalism, single-page, zero-dependenc
 - 3-key automatic rotation with session-level quota exhaustion protection
 - iOS/Android safe area adaptation
 
-The core application code (HTML + CSS + JS) is ~91KB, suitable for learning vanilla web development or as a lightweight AI application base.
+Core app code (HTML + CSS + JS) is about 188KB, suitable for learning native web development or as a lightweight AI application base.
 
 ---
 
