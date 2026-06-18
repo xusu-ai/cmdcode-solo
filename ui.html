@@ -3150,6 +3150,17 @@ async function shareCurrentImage(){
   ivShareBtn.disabled=false;
 }
 
+// ── iOS 键盘适配：visualViewport 动态调整 .app 高度 ──
+if(window.visualViewport){
+  const appEl=document.querySelector('.app');
+  function onVpResize(){
+    if(appEl)appEl.style.height=window.visualViewport.height+'px';
+  }
+  window.visualViewport.addEventListener('resize',onVpResize);
+  window.visualViewport.addEventListener('scroll',onVpResize);
+  onVpResize();
+}
+
 // ── 会话结束：关闭页面或退出时触发记忆提取 ──
 window.addEventListener('beforeunload',function(){
   if(currentUser&&recentConversationMessages.length>=2){
