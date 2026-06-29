@@ -73,8 +73,8 @@ AI Agent 会自动处理所有步骤：
 ### 部署步骤
 
 1. 将仓库克隆到你的 Web 服务器目录。
-2. 编辑 `config.enc.php`，设置强随机密码短语，并将 API Key 写入加密存储。
-3. 修改 `proxy.php` 中的 `ACCESS_TOKEN` 和域名白名单。
+2. 编辑 `config.enc.php`，设置强随机密码短语，并将 API Key 和 ACCESS_TOKEN 写入加密存储。
+3. `proxy.php` 自动从 `config.enc.php` 加载 ACCESS_TOKEN 和域名白名单，无需手动修改。
 4. 导入所需数据表（自动创建，或手动执行 `CREATE TABLE IF NOT EXISTS ...`）。
 5. 配置 Crontab：
    ```cron
@@ -116,7 +116,7 @@ AI Agent 会自动处理所有步骤：
 
 ```
 cmdcode-solo/
-├── ui.html                        # 完整前端 Agent，含记忆检索（~188KB）
+├── ui.html                        # 完整前端 Agent，含记忆检索（~196KB）
 ├── proxy.php                      # API 代理 + 记忆系统核心（~92KB）
 ├── config.enc.php                 # AES-256-CBC 加密配置文件（含数据库凭据和 API 密钥）
 ├── .htaccess                      # Apache/LiteSpeed 安全规则
@@ -133,8 +133,8 @@ cmdcode-solo/
 
 | 文件 | 大小 | 描述 |
 |:----|:----|:------|
-| **ui.html** | ~188 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
-| **proxy.php** | ~92 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道、MUD 游戏引擎 |
+|| **ui.html** | ~196 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、模型选择设置面板、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
+|| **proxy.php** | ~92 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含加密配置动态加载（config.enc.php）、用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道、MUD 游戏引擎。PHP 超时已延长至 300s 以支持 DeepSeek V4 百万 token 上下文 |
 | **config.enc.php** | ~2.5 KB | AES-256-CBC 加密配置，含 MySQL 凭据、ACCESS_TOKEN、API 密钥（密钥永不落盘明文） |
 | **.htaccess** | ~500 B | Apache/LiteSpeed 安全规则：阻止直接访问 `.enc.php` 和隐藏文件，保护 `.htaccess` 自身 |
 

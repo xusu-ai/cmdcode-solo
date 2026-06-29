@@ -1,5 +1,27 @@
 <?php
 
+// 延长 PHP 执行时间（避免 chat/completions 等长请求超时）
+// DeepSeek V4 Flash 支持 100 万 tokens 上下文，需要更长的处理时间
+@ini_set('max_execution_time', 300);
+@set_time_limit(300);
+
+// ═══════════════════════════════════════
+// 加载加密配置（所有敏感凭据集中管理）
+// ═══════════════════════════════════════
+$_config = __DIR__ . '/config.enc.php';
+if (!file_exists($_config)) {
+    http_response_code(500);
+    echo json_encode(['error' => 'config_missing', 'message' => 'config.enc.php not found']);
+    exit;
+}
+$PROVIDERS = include $_config;
+if (!is_array($PROVIDERS)) {
+    http_response_code(500);
+    echo json_encode(['error' => 'config_load_failed', 'message' => '加密配置加载失败']);
+    exit;
+}
+
+
 // ═══════════════════════════════════════
 // MEMORY CORE FUNCTIONS (merged)
 // ═══════════════════════════════════════
@@ -17,9 +39,9 @@ function getMemoryDB(): PDO {
     static $pdo = null;
     if ($pdo === null) {
         $pdo = new PDO(
-            'mysql:host=__YOUR_MYSQL_HOST__;dbname=__YOUR_MYSQL_DB__;charset=utf8mb4',
-            '__YOUR_MYSQL_USER__',
-            '__YOUR_MYSQL_PASS__',
+            'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+            DB_USER,
+            DB_PASS,
             [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
@@ -33,7 +55,7 @@ function getMemoryDB(): PDO {
 // ── 主密钥派生（基于 config.enc.php 的加密口令） ──
 function getMemoryMasterKey(): string {
     // 使用与 config.enc.php 相同的加密口令派生记忆系统主密钥
-    $passphrase = '__YOUR_ENC_PASSPHRASE__';
+    $passphrase = ENC_PASSPHRASE;
     return hash('sha256', $passphrase . ':memory:master', true);
 }
 
@@ -76,13 +98,6 @@ function decryptFact(array $encrypted, string $userId): string {
 }
 
 // ── 原子文件写入 ──
-function atomicFileWrite(string $filePath, string $content): bool {
-    $tmpPath = $filePath . '.tmp.' . getmypid();
-    if (file_put_contents($tmpPath, $content, LOCK_EX) === false) return false;
-    if (!rename($tmpPath, $filePath)) { @unlink($tmpPath); return false; }
-    return true;
-}
-
 // ── 安全追加JSONL ──
 function safeAppendJSONL(string $filePath, array $record): bool {
     $line = json_encode($record, JSON_UNESCAPED_UNICODE) . "\n";
@@ -159,51 +174,70 @@ function checkMemoryQuota(string $userId, int $incomingBytes): bool {
     return ($current + $incomingBytes) <= (100 * 1024 * 1024);
 }
 
-// ── 获取用户总用量 ──
-function getUserTotalMemoryUsage(string $userId): int {
-    $memoryDir = getMemoryDir($userId);
-    $size = 0;
-    if (is_dir($memoryDir)) $size += dirSize($memoryDir);
-    return $size;
-}
-
 // ── 调用LLM API提取事实（简化版，使用proxy.php的curl逻辑） ──
 function callMemoryLLM(array $messages): string {
     $apiUrl = 'https://opencode.ai/zen/go/v1/chat/completions';
-    $configPath = __DIR__ . '/config.enc.php';
-    if (!file_exists($configPath)) return '{}';
+    global $PROVIDERS;
+    if (!isset($PROVIDERS) || !is_array($PROVIDERS)) return '{}';
+    // 使用轮换状态获取当前活跃密钥
+    $keys = [];
+    if (defined('ROTATION_GROUPS')) {
+        $rotGroups = @unserialize(ROTATION_GROUPS);
+        if (is_array($rotGroups) && isset($rotGroups['opencode-go'])) {
+            $startIdx = getRotationStartIndex('opencode-go');
+            $expanded = expandRotationKeys($rotGroups['opencode-go'], $startIdx, $PROVIDERS);
+            if (!empty($expanded)) $keys = $expanded;
+        }
+    }
+    // 回退：硬编码链
+    if (empty($keys)) {
+        $keys = $PROVIDERS['opencode-go']['keys'] ?? [];
+        if (empty($keys) || empty($keys[0])) $keys = $PROVIDERS['opencode-go1']['keys'] ?? [];
+        if (empty($keys) || empty($keys[0])) $keys = $PROVIDERS['opencode-go2']['keys'] ?? [];
+        if (empty($keys) || empty($keys[0])) $keys = $PROVIDERS['opencode-go3']['keys'] ?? [];
+        if (empty($keys) || empty($keys[0])) $keys = $PROVIDERS['opencode-go4']['keys'] ?? [];
+    }
+    // 过滤空密钥
+    $keys = array_values(array_filter($keys, function($k) { return !empty($k); }));
+    if (empty($keys)) return '{}';
     
-    $PROVIDERS = include $configPath;
-    $keys = $PROVIDERS['opencode-go']['keys'] ?? [];
-    if (empty($keys) || empty($keys[0])) return '{}';
-    
-    $ch = curl_init();
-    curl_setopt_array($ch, [
-        CURLOPT_URL => $apiUrl,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_HTTPHEADER => [
-            'Content-Type: application/json',
-            'Authorization: Bearer ' . $keys[0],
-        ],
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => json_encode([
-            'model' => 'deepseek-v4-flash',
-            'messages' => $messages,
-            'temperature' => 0.3,
-            'max_tokens' => 4096,
-        ]),
-        CURLOPT_SSL_VERIFYPEER => false,
-    ]);
-    
-    $response = curl_exec($ch);
-    $error = curl_error($ch);
-    curl_close($ch);
-    
-    if ($error) return '{}';
-    $data = json_decode($response, true);
-    return $data['choices'][0]['message']['content'] ?? '{}';
+    $lastError = '';
+    foreach ($keys as $key) {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $apiUrl,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $key,
+            ],
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode([
+                'model' => 'deepseek-v4-flash',
+                'messages' => $messages,
+                'temperature' => 0.3,
+                'max_tokens' => 16384,
+            ]),
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        
+        $response = curl_exec($ch);
+        $error = curl_error($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($error) { $lastError = $error; continue; }
+        if ($httpCode === 429) { $lastError = 'rate_limited'; continue; }
+        if ($httpCode >= 200 && $httpCode < 300) {
+            $data = json_decode($response, true);
+            return $data['choices'][0]['message']['content'] ?? '{}';
+        }
+        $lastError = "http_{$httpCode}";
+        continue;
+    }
+    return '{}';
 }
 
 /**
@@ -374,19 +408,11 @@ function getUserDir($username) {
     if (!is_dir($td)) @mkdir($td, 0755, true);
     return $dir;
 }
-function getUserUsage($username) {
-    $dir = getUserDir($username);
-    $total = 0;
-    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS));
-    foreach ($files as $file) {
-        if ($file->isFile()) $total += $file->getSize();
-    }
-    return $total;
-}
 define('QUOTA_BYTES', 1024 * 1024 * 1024); // 1GB (admin)
 define('REGULAR_QUOTA_BYTES', 100 * 1024 * 1024); // 100MB (普通用户)
-define('ACCESS_TOKEN', '__YOUR_PROXY_ACCESS_TOKEN__'); // 前端访问令牌（与 cron worker 一致）
+// ACCESS_TOKEN loaded from config.enc.php // 前端访问令牌（与 cron worker 一致）
 define('GUEST_QUOTA_BYTES', 1 * 1024 * 1024 * 1024); // 1GB shared for all guests
+$MIME_MAP = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','bmp'=>'image/bmp','svg'=>'image/svg+xml','mp3'=>'audio/mpeg','mp4'=>'video/mp4','pdf'=>'application/pdf','txt'=>'text/plain','html'=>'text/html','css'=>'text/css','js'=>'application/javascript','json'=>'application/json','md'=>'text/markdown','csv'=>'text/csv','zip'=>'application/zip'];
 
 // 安全辅助函数：获取当前有效用户目录（登录用户→个人文件夹，访客→共享 guest/ 文件夹）
 function getUserDirSafe() {
@@ -413,10 +439,160 @@ function getUserUsageSafe() {
     return $total;
 }
 
+// ═══════════════════════════════════════
+// MUD 游戏引擎（无预设剧本，LLM驱动一切叙事）
+// ═══════════════════════════════════════
+class GameEngine {
+    private $savePath;
+    private $state;
+    const DEFAULT_STATE = [
+        'game_started' => false,
+        'image_mode' => false,
+        'voice_mode' => false,
+        'vision_mode' => false,
+    ];
+
+    public function __construct(string $userDir) {
+        $this->savePath = $userDir . '/mud_save.json';
+        $this->state = self::DEFAULT_STATE;
+        if (file_exists($this->savePath)) {
+            $saved = json_decode(file_get_contents($this->savePath), true);
+            if (is_array($saved)) $this->state = array_merge(self::DEFAULT_STATE, $saved);
+        }
+    }
+
+    private function save(): void {
+        file_put_contents($this->savePath, json_encode($this->state, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+    }
+
+    public function saveFull(array $messages, string $scenario): void {
+        $this->state['messages'] = $messages;
+        $this->state['scenario'] = $scenario;
+        $this->state['savedAt'] = date('c');
+        $this->save();
+    }
+
+    public function initNewGame(): array {
+        $this->state = self::DEFAULT_STATE;
+        $this->state['game_started'] = true;
+        // 重置时删除旧存档，确保无残留
+        if (file_exists($this->savePath)) {
+            @unlink($this->savePath);
+        }
+        $this->save();
+        return ['game_output'=>'[GAME_INITIALIZED]', 'state'=>$this->getStateBlock(), 'needs_narration'=>true];
+    }
+
+    public function updateState(array $updates): array {
+        // 无状态设计：LLM 可以设置任意字段，后端不预设剧本和参数
+        // _added 后缀追加模式，其余整体替换
+        $changed = [];
+        foreach ($updates as $key => $val) {
+            $lk = strtolower($key);
+            if (str_ends_with($lk, '_added')) {
+                // 追加模式：inventory_added 追加到 inventory
+                $baseKey = substr($lk, 0, -6);
+                $old = $this->state[$baseKey] ?? [];
+                $add = is_array($val) ? $val : [$val];
+                $this->state[$baseKey] = array_values(array_unique(array_merge($old, $add)));
+                $changed[] = $baseKey . '_added';
+            } else {
+                // 整体替换模式：LLM 返回什么就存什么
+                $this->state[$lk] = $val;
+                $changed[] = $lk;
+            }
+        }
+        if (!empty($changed)) $this->save();
+        return ['game_output'=>'[STATE_UPDATED]', 'state'=>$this->getStateBlock(), 'needs_narration'=>true, 'updated_fields'=>$changed];
+    }
+
+    public function dispatchCommand(string $cmd, string $originalMsg, array $messages = [], string $scenario = ''): array {
+        if (!$this->state['game_started']) return $this->initNewGame();
+        $cmd = trim($cmd);
+        if (preg_match('/^(状态|属性|\/status|status)$/iu', $cmd)) {
+            return $this->handleStatus();
+        }
+        if (preg_match('/^(存档|\/save|save)$/iu', $cmd)) {
+            return $this->handleSave($messages, $scenario);
+        }
+        if (preg_match('/^(读档|\/load|load)$/iu', $cmd)) {
+            return $this->handleLoad();
+        }
+        if (preg_match('/^(开图|开启配图|开启图片|image_on)$/iu', $cmd)) {
+            $this->state['image_mode'] = true; $this->save();
+            return ['game_output'=>'[IMAGE_MODE_ON]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(关图|关闭配图|关闭图片|image_off)$/iu', $cmd)) {
+            $this->state['image_mode'] = false; $this->save();
+            return ['game_output'=>'[IMAGE_MODE_OFF]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(开声|开启语音|voice_on)$/iu', $cmd)) {
+            $this->state['voice_mode'] = true; $this->save();
+            return ['game_output'=>'[VOICE_MODE_ON]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(关声|关闭语音|voice_off)$/iu', $cmd)) {
+            $this->state['voice_mode'] = false; $this->save();
+            return ['game_output'=>'[VOICE_MODE_OFF]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(开识|开启识图|vision_on)$/iu', $cmd)) {
+            $this->state['vision_mode'] = true; $this->save();
+            return ['game_output'=>'[VISION_MODE_ON]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(关识|关闭识图|vision_off)$/iu', $cmd)) {
+            $this->state['vision_mode'] = false; $this->save();
+            return ['game_output'=>'[VISION_MODE_OFF]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+        }
+        if (preg_match('/^(返回|重新开始|重启|restart)$/iu', $cmd)) {
+            return $this->initNewGame();
+        }
+        return $this->handleAction($cmd, $originalMsg);
+    }
+
+    private function handleAction(string $cmd, string $originalMsg): array {
+        $ctx = ($originalMsg && $originalMsg !== $cmd) ? $originalMsg : $cmd;
+        return ['game_output'=>'[ACTION]', 'action'=>$ctx, 'state'=>$this->getStateBlock(), 'needs_narration'=>true];
+    }
+
+    private function handleStatus(): array {
+        return ['game_output'=>'[STATUS]', 'state'=>$this->getStateBlock(), 'needs_narration'=>true];
+    }
+
+    private function handleSave(array $messages = [], string $scenario = ''): array {
+        if (!empty($messages)) {
+            $this->saveFull($messages, $scenario);
+        } else {
+            $this->save();
+        }
+        return ['game_output'=>'[SAVED]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+    }
+
+    private function handleLoad(): array {
+        if (file_exists($this->savePath)) {
+            $saved = json_decode(file_get_contents($this->savePath), true);
+            if (is_array($saved)) {
+                $this->state = array_merge(self::DEFAULT_STATE, $saved);
+                return ['game_output'=>'[LOADED]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+            }
+        }
+        return ['game_output'=>'[NO_SAVE]', 'state'=>$this->getStateBlock(), 'needs_narration'=>false];
+    }
+
+private function getStateBlock(): array {
+        // 无状态设计：后端不预设任何剧本参数，完全由 LLM 返回的文字设定
+        // 仅保证系统开关字段有默认值，其余字段原样返回
+        $s = $this->state;
+        $s['game_started'] = $s['game_started'] ?? false;
+        $s['image_mode'] = $s['image_mode'] ?? false;
+        $s['voice_mode'] = $s['voice_mode'] ?? false;
+        $s['vision_mode'] = $s['vision_mode'] ?? false;
+        return $s;
+    }
+}
+
 // 用户系统动作路由（优先级高于 API 代理）
 $action = $input['_action'] ?? $_GET['_action'] ?? '';
-if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash','memory','image_proxy'])) {
-    session_start();
+if (in_array($action, ['register','login','logout','session','get_proxy_token','quota','file_read','file_write','file_edit','file_delete','list_files','file_rename','file_save_from_url','file_download','generate_share_link','web_fetch','bash','memory','image_proxy','mud_action'])) {
+if (session_status() === PHP_SESSION_NONE) session_start();
     // ─── 全域 Token 认证（排除无需 token 的动作） ───
     $exemptActions = ['register','login','session','get_proxy_token'];
     $requiresToken = !in_array($action, $exemptActions);
@@ -514,7 +690,7 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             $oldStr = $input['old_string'];
             $newStr = $input['new_string'];
             if (strpos($oldContent, $oldStr) === false) { echo json_encode(['error'=>'未找到匹配字符串']); exit; }
-            $newContent = !empty($input['replace_all']) ? str_replace($oldStr, $newStr, $oldContent) : str_replace($oldStr, $newStr, $oldContent);
+            $newContent = !empty($input['replace_all']) ? str_replace($oldStr, $newStr, $oldContent) : preg_replace('#'.preg_quote($oldStr, '#').'#', $newStr, $oldContent, 1);
             $diff = strlen($newContent) - strlen($oldContent);
             if (getUserUsageSafe() + $diff > getUserQuotaSafe()) { echo json_encode(['error'=>'超出存储配额']); exit; }
             file_put_contents($fullPath, $newContent);
@@ -524,8 +700,16 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
         case 'file_delete':
             $fullPath = getUserDirSafe() . '/' . ltrim($input['file_path'], '/');
             if (strpos($fullPath, '..') !== false) { echo json_encode(['error'=>'路径不合法']); exit; }
-            if (file_exists($fullPath)) { unlink($fullPath); echo json_encode(['success'=>true,'message'=>'文件已删除']); }
-            else { echo json_encode(['error'=>'文件不存在']); }
+            if (!file_exists($fullPath)) { echo json_encode(['error'=>'文件不存在']); exit; }
+            if (is_dir($fullPath)) {
+                $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($fullPath, RecursiveDirectoryIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+                foreach ($it as $f) { if ($f->isDir()) rmdir($f->getRealPath()); else unlink($f->getRealPath()); }
+                rmdir($fullPath);
+                echo json_encode(['success'=>true,'message'=>'目录已删除']);
+            } else {
+                unlink($fullPath);
+                echo json_encode(['success'=>true,'message'=>'文件已删除']);
+            }
             exit;
 
         case 'list_files':
@@ -631,8 +815,7 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
                         $fullPath = getUserDir($shareData['username']) . '/' . ltrim($shareData['path'], '/');
                         if (file_exists($fullPath)) {
                             $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
-                            $mimeMap = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','bmp'=>'image/bmp','svg'=>'image/svg+xml','mp3'=>'audio/mpeg','mp4'=>'video/mp4','pdf'=>'application/pdf','txt'=>'text/plain','html'=>'text/html','css'=>'text/css','js'=>'application/javascript','json'=>'application/json','md'=>'text/markdown','csv'=>'text/csv','zip'=>'application/zip'];
-                            header('Content-Type: ' . ($mimeMap[$ext] ?? 'application/octet-stream'));
+                            header('Content-Type: ' . ($GLOBALS['MIME_MAP'][$ext] ?? 'application/octet-stream'));
                             header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
                             readfile($fullPath);
                             exit;
@@ -647,8 +830,7 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
             if (strpos($fullPath, '..') !== false) { http_response_code(403); echo json_encode(['error'=>'路径不合法']); exit; }
             if (!file_exists($fullPath)) { http_response_code(404); echo json_encode(['error'=>'文件未找到']); exit; }
             $ext = strtolower(pathinfo($fullPath, PATHINFO_EXTENSION));
-            $mimeMap = ['jpg'=>'image/jpeg','jpeg'=>'image/jpeg','png'=>'image/png','gif'=>'image/gif','webp'=>'image/webp','bmp'=>'image/bmp','svg'=>'image/svg+xml','mp3'=>'audio/mpeg','mp4'=>'video/mp4','pdf'=>'application/pdf','txt'=>'text/plain','html'=>'text/html','css'=>'text/css','js'=>'application/javascript','json'=>'application/json','md'=>'text/markdown','csv'=>'text/csv','zip'=>'application/zip'];
-            header('Content-Type: ' . ($mimeMap[$ext] ?? 'application/octet-stream'));
+            header('Content-Type: ' . ($GLOBALS['MIME_MAP'][$ext] ?? 'application/octet-stream'));
             header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
             readfile($fullPath);
             exit;
@@ -712,13 +894,15 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
                     echo json_encode(['error'=>'该命令已被安全策略拦截']); exit;
                 }
             }
-            $escaped = escapeshellcmd($cmd);
+            // 在用户目录内执行命令，避免触发主机 open_basedir/jailshell 限制
+            $workDir = getUserDirSafe();
+            $escaped = 'cd ' . escapeshellarg($workDir) . ' && ' . escapeshellcmd($cmd);
             $result = null;
             @set_time_limit($timeout + 5);
             // 尝试多种执行方式（proc_open→exec→shell_exec）
             if ($result === null && function_exists('proc_open') && !in_array('proc_open', explode(',', ini_get('disable_functions')))) {
                 $descriptorspec = [0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']];
-                $process = @proc_open($escaped, $descriptorspec, $pipes, null, null);
+                $process = @proc_open($escaped, $descriptorspec, $pipes, $workDir);
                 if (is_resource($process)) {
                     fclose($pipes[0]);
                     $stdout = stream_get_contents($pipes[1]);
@@ -953,6 +1137,28 @@ if (in_array($action, ['register','login','logout','session','get_proxy_token','
                     echo json_encode(['error' => 'Unknown sub_action']);
             }
             exit;
+        case 'mud_action':
+            header('Content-Type: application/json; charset=utf-8');
+            $cmd = $input['command'] ?? '';
+            $originalMsg = $input['original_message'] ?? $cmd;
+            $stateUpdates = isset($input['state_updates']) && is_array($input['state_updates']) ? $input['state_updates'] : null;
+            if (!$cmd && !$stateUpdates) { echo json_encode(['error'=>'command or state_updates required']); exit; }
+            $mudUserDir = getUserDirSafe();
+            if (!is_dir($mudUserDir . '/mud')) @mkdir($mudUserDir . '/mud', 0755, true);
+            $engine = new GameEngine($mudUserDir . '/mud');
+            $result = null;
+            if ($stateUpdates) {
+                $result = $engine->updateState($stateUpdates);
+            } elseif (preg_match('/^(开始泥巴游戏|开始mud|start\s*mud|新游戏)$/iu', $cmd)) {
+                $result = $engine->initNewGame();
+            } else {
+                $messages = isset($input['messages']) && is_array($input['messages']) ? $input['messages'] : [];
+                $scenario = $input['scenario'] ?? '';
+                $result = $engine->dispatchCommand($cmd, $originalMsg, $messages, $scenario);
+            }
+            if ($result === null) $result = ['game_output'=>'[ENGINE_NULL]', 'state'=>$engine->getStateBlock(), 'needs_narration'=>false];
+            echo json_encode($result, JSON_UNESCAPED_UNICODE);
+            exit;
     }
     exit;
 }
@@ -974,13 +1180,57 @@ if ($token !== ACCESS_TOKEN) {
 }
 
 // ═══════════════════════════════════════
-// ⑤ 加载加密配置
+// ⑤ 加密配置已在文件顶部加载
 // ═══════════════════════════════════════
-$PROVIDERS = include __DIR__ . '/config.enc.php';
-if (!is_array($PROVIDERS)) {
-    http_response_code(500);
-    echo json_encode(['error' => 'config_load_failed', 'message' => '加密配置加载失败']);
-    exit;
+
+function getEndpointTimeout(string $apiPath): int {
+    $timeouts = [
+        '/music_generation' => 180,
+        '/music_process' => 180,
+        '/video_generation' => 180,
+        '/video_process' => 180,
+        '/image_generation' => 120,
+        '/t2a_v2' => 60,
+        '/chat/completions' => 240,
+    ];
+    return $timeouts[$apiPath] ?? 30;
+}
+
+function getRotationState(): array {
+    $default = [];
+    $file = defined('ROTATION_STATE_FILE') ? ROTATION_STATE_FILE : '/vhost/tmp/provider_rotation.json';
+    if (!file_exists($file)) return $default;
+    $data = @json_decode(@file_get_contents($file), true);
+    return is_array($data) ? $data : $default;
+}
+
+function getRotationStartIndex(string $groupName): int {
+    $state = getRotationState();
+    return isset($state[$groupName]['current']) ? (int)$state[$groupName]['current'] : 0;
+}
+
+function expandRotationKeys(array $group, int $startIdx, array &$PROVIDERS): array {
+    $expanded = [];
+    $total = count($group);
+    for ($i = 0; $i < $total; $i++) {
+        $memberName = $group[($startIdx + $i) % $total];
+        $memberKeys = isset($PROVIDERS[$memberName]) ? $PROVIDERS[$memberName]['keys'] : [];
+        foreach ($memberKeys as $mk) {
+            if (!empty($mk)) $expanded[] = $mk;
+        }
+    }
+    return $expanded;
+}
+
+// ── Key cooldown helpers (backed by file) ──
+define('KEY_COOLDOWN_FILE', '/vhost/tmp/key_cooldowns.json');
+function getKeyCooldowns(): array {
+    if (!file_exists(KEY_COOLDOWN_FILE)) return [];
+    $data = @json_decode(@file_get_contents(KEY_COOLDOWN_FILE), true);
+    return is_array($data) ? $data : [];
+}
+function saveKeyCooldowns(array $cooldowns): void {
+    file_put_contents(KEY_COOLDOWN_FILE, json_encode($cooldowns, JSON_PRETTY_PRINT), LOCK_EX);
 }
 
 // ── 解析请求 ──
@@ -1004,6 +1254,23 @@ if (!isset($PROVIDERS[$provider_name])) {
 $provider = $PROVIDERS[$provider_name];
 $api_keys = $provider['keys'];
 $base_url = rtrim($provider['base_url'], '/');
+
+// 如果 provider 属于某个轮换组，展开为整条链的所有 key
+if (defined('ROTATION_GROUPS')) {
+    $rotGroups = @unserialize(ROTATION_GROUPS);
+    if (is_array($rotGroups)) {
+        foreach ($rotGroups as $groupName => $groupMembers) {
+            if (in_array($provider_name, $groupMembers)) {
+                $startIdx = getRotationStartIndex($groupName);
+                $expanded = expandRotationKeys($groupMembers, $startIdx, $PROVIDERS);
+                if (!empty($expanded)) {
+                    $api_keys = $expanded;
+                }
+                break;
+            }
+        }
+    }
+}
 
 // 如果没传 _path，默认使用 /chat/completions
 if (!$api_path) {
@@ -1595,93 +1862,6 @@ function processUpdatePersona(string $userId, string $memoryDir, PDO $pdo): void
 /**
  * 搜索记忆（可直接调用）
  */
-function searchMemories(string $userId, string $query, PDO $pdo, string $memoryDir, int $topN = 10): array {
-    if (empty($query)) return [];
-    
-    $k = 60;
-    $stmt = $pdo->prepare(
-        "SELECT id, fact_id, fact_preview, category, importance, access_count, 
-         UNIX_TIMESTAMP(created_at) as created_ts,
-         MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) as text_score 
-         FROM memory_index 
-         WHERE user_id=:uid AND MATCH(fact_preview) AGAINST(:q IN NATURAL LANGUAGE MODE) > 0 
-         ORDER BY text_score DESC 
-         LIMIT 100"
-    );
-    $stmt->execute(['q' => $query, 'uid' => $userId]);
-    $candidates = $stmt->fetchAll();
-    if (empty($candidates)) return [];
-    
-    // RRF 排序
-    $textRank = [];
-    foreach ($candidates as $i => $c) $textRank[$c['id']] = $i + 1;
-    
-    $lambda = log(2) / (7 * 86400);
-    $now = time();
-    $timeScores = [];
-    foreach ($candidates as $c) $timeScores[$c['id']] = exp(-$lambda * max($now - $c['created_ts'], 0));
-    arsort($timeScores);
-    $timeRank = [];
-    $pos = 1;
-    foreach (array_keys($timeScores) as $id) $timeRank[$id] = $pos++;
-    
-    usort($candidates, fn($a, $b) => $b['access_count'] <=> $a['access_count']);
-    $popRank = [];
-    foreach ($candidates as $i => $c) $popRank[$c['id']] = $i + 1;
-    
-    $weights = ['credential' => 0.8, 'decision' => 1.2, 'constraint' => 1.3, 'preference' => 1.0, 'event' => 0.8, 'knowledge' => 0.7, 'contact' => 1.1];
-    
-    $rrfScores = [];
-    foreach ($candidates as $c) {
-        $id = $c['id'];
-        $score = 0;
-        if (isset($textRank[$id])) $score += 1 / ($k + $textRank[$id]);
-        if (isset($timeRank[$id])) $score += 1 / ($k + $timeRank[$id]);
-        if (isset($popRank[$id])) $score += 1 / ($k + $popRank[$id]);
-        $catWeight = $weights[$c['category']] ?? 1.0;
-        $score *= $catWeight;
-        $rrfScores[$id] = ['score' => $score, 'fact_id' => $c['fact_id'], 'category' => $c['category'], 'importance' => $c['importance']];
-    }
-    uasort($rrfScores, fn($a, $b) => $b['score'] <=> $a['score']);
-    $top = array_slice($rrfScores, 0, $topN, true);
-    
-    // 从 JSONL 解密获取完整内容
-    $factsFilePath = $memoryDir . '/L1_facts.jsonl';
-    $results = [];
-    if (file_exists($factsFilePath)) {
-        $lines = file($factsFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        $factMap = [];
-        foreach ($lines as $line) {
-            $rec = json_decode($line, true);
-            if ($rec) $factMap[$rec['id']] = $rec;
-        }
-        foreach ($top as $indexId => $rd) {
-            $fid = $rd['fact_id'];
-            if (isset($factMap[$fid])) {
-                try {
-                    $decrypted = decryptFact($factMap[$fid]['encrypted'], $userId);
-                    $results[] = [
-                        'id' => $fid,
-                        'fact' => $decrypted,
-                        'category' => $rd['category'],
-                        'importance' => $rd['importance'],
-                        'rrf_score' => round($rd['score'], 4),
-                        'scene_id' => $factMap[$fid]['l2_scene_id'] ?? null,
-                    ];
-                } catch (Exception $e) {}
-            }
-        }
-    }
-    
-    // 更新访问计数
-    if (!empty($top)) {
-        $ids = array_keys($top);
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $pdo->prepare("UPDATE memory_index SET access_count = access_count + 1, last_accessed_at = NOW() WHERE id IN ($placeholders)")->execute($ids);
-    }
-    
-    return $results;
-}
 // ═══════════════════════════════════════
 // ⑧ 记忆系统后台任务处理（Hermes Cron 驱动）
 // ═══════════════════════════════════════
@@ -1764,7 +1944,73 @@ if ($api_path === '/memory_process') {
     exit;
 }
 
-// ── 轮询尝试各密钥 ──
+// ── 流式传输支持（chat/completions） ──
+$isStream = !empty($input['stream']);
+if ($isStream && strpos($api_path, 'chat/completions') !== false) {
+    // 禁用所有输出缓冲
+    while (ob_get_level() > 0) ob_end_clean();
+    
+    // 流式模式：逐块转发，永不超时
+    header('Content-Type: text/event-stream');
+    header('Cache-Control: no-cache');
+    header('Connection: keep-alive');
+    header('X-Accel-Buffering: no');
+    header('Content-Encoding: none');
+    @ini_set('zlib.output_compression', 0);
+    @ini_set('output_buffering', 0);
+
+    $last_error = '';
+    foreach ($api_keys as $idx => $key) {
+        if (empty($key)) continue;
+
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $target_url,
+            CURLOPT_TIMEOUT => 300,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Authorization: Bearer ' . $key,
+            ],
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($input),
+        ]);
+
+        // 流式回调：每收到一块数据立即转发给前端
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $chunk) use (&$http_code) {
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            echo $chunk;
+            ob_flush();
+            flush();
+            return strlen($chunk);
+        });
+
+        $http_code = 0;
+        curl_exec($ch);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        if ($error) {
+            $last_error = $error;
+            continue;
+        }
+        if ($http_code === 429) {
+            $last_error = "Key " . ($idx + 1) . " rate limited";
+            continue;
+        }
+        if ($http_code >= 200 && $http_code < 300) {
+            exit; // 成功，流式传输完成
+        }
+        $last_error = "Key " . ($idx + 1) . " HTTP " . $http_code;
+    }
+
+    // 所有密钥失败
+    echo "data: " . json_encode(['error' => 'proxy_all_keys_exhausted', 'message' => $last_error]) . "\n\n";
+    echo "data: [DONE]\n\n";
+    exit;
+}
+
+// ── 非流式模式：原有逻辑 ──
 $last_error = '';
 foreach ($api_keys as $idx => $key) {
     if (empty($key)) {
@@ -1776,13 +2022,29 @@ foreach ($api_keys as $idx => $key) {
     curl_setopt_array($ch, [
         CURLOPT_URL => $target_url,
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 60,
+        CURLOPT_TIMEOUT => getEndpointTimeout($api_path),
         CURLOPT_CONNECTTIMEOUT => 10,
         CURLOPT_HTTPHEADER => [
             'Content-Type: application/json',
             'Authorization: Bearer ' . $key,
         ],
     ]);
+
+    // Debug logging for image_generation and t2a_v2
+    if (strpos($api_path, 'image_generation') !== false || strpos($api_path, 't2a_v2') !== false) {
+        $debugPayload = json_encode($input, JSON_UNESCAPED_UNICODE);
+        $debugFile = '/vhost/tmp/api_debug_' . md5($api_path . microtime(true)) . '.json';
+        @file_put_contents($debugFile, json_encode([
+            'timestamp' => date('Y-m-d H:i:s'),
+            'api_path' => $api_path,
+            'target_url' => $target_url,
+            'provider' => $provider_name,
+            'method' => $method,
+            'payload_size' => strlen($debugPayload),
+            'payload_preview' => mb_substr($debugPayload, 0, 500),
+            'key_index' => $idx,
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+    }
 
     if ($method === 'POST') {
         curl_setopt($ch, CURLOPT_POST, true);
@@ -1796,6 +2058,21 @@ foreach ($api_keys as $idx => $key) {
     $error = curl_error($ch);
     curl_close($ch);
 
+    // Debug log for failed requests (all endpoints)
+    if ($error || $http_code >= 400) {
+        $debugFile = '/vhost/tmp/api_debug_' . md5($api_path . microtime(true)) . '.json';
+        @file_put_contents($debugFile, json_encode([
+            'timestamp' => date('Y-m-d H:i:s'),
+            'api_path' => $api_path,
+            'target_url' => $target_url,
+            'provider' => $provider_name,
+            'key_index' => $idx,
+            'http_code' => $http_code,
+            'curl_error' => $error ?: null,
+            'response_preview' => mb_substr($response, 0, 1000),
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+    }
+
     if ($error) {
         $last_error = $error;
         continue;
@@ -1803,6 +2080,22 @@ foreach ($api_keys as $idx => $key) {
 
     if ($http_code === 429) {
         $last_error = "Key " . ($idx + 1) . " rate limited";
+        continue;
+    }
+
+    // 非成功响应：记录详细信息用于调试
+    if ($http_code === 400) {
+        // 400 Bad Request: 请求格式错误，轮换Key无意义，直接返回
+        http_response_code(400);
+        echo json_encode([
+            'error' => 'bad_request',
+            'message' => '请求格式错误: ' . mb_substr($response, 0, 300),
+            'detail' => ['provider' => $provider_name, 'target_url' => $target_url, 'response' => mb_substr($response, 0, 500)],
+        ]);
+        exit;
+    }
+    if ($http_code >= 400) {
+        $last_error = "Key " . ($idx + 1) . " HTTP " . $http_code . ": " . mb_substr($response, 0, 300);
         continue;
     }
 
@@ -1817,6 +2110,10 @@ http_response_code(503);
 echo json_encode([
     'error' => 'proxy_all_keys_exhausted',
     'message' => '所有 API Key 均已耗尽或代理请求失败: ' . $last_error,
-    'available_keys' => count($api_keys),
-    'provider' => $provider_name,
+    'detail' => [
+        'provider' => $provider_name,
+        'target_url' => $target_url,
+        'keys_count' => count($api_keys),
+        'last_error' => $last_error,
+    ],
 ]);

@@ -25,7 +25,7 @@
   --mono:'SF Mono','Fira Code','Cascadia Code','JetBrains Mono',monospace;
 }
 body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:100%;width:100%;-webkit-font-smoothing:antialiased;overflow:hidden}
-.app{display:flex;flex-direction:column;height:100dvh;width:100%;position:relative;z-index:1}
+.app{display:flex;flex-direction:column;position:fixed;top:0;left:0;width:100%;height:100%;height:100dvh;z-index:1}
 
 .cyber-bg{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse at 50% 120%,rgba(0,255,136,0.04) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(0,229,255,0.03) 0%,transparent 40%),linear-gradient(180deg,#0a0a0f 0%,#080c14 50%,#060a10 100%)}
 .scan-grid{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:0.02;background:linear-gradient(0deg,transparent 49.5%,rgba(0,255,136,0.3) 49.5%,rgba(0,255,136,0.3) 50.5%,transparent 50.5%),linear-gradient(90deg,transparent 49.5%,rgba(0,255,136,0.2) 49.5%,rgba(0,255,136,0.2) 50.5%,transparent 50.5%);background-size:60px 60px}
@@ -65,7 +65,8 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
 @keyframes iconPulse{0%,100%{filter:drop-shadow(0 0 20px rgba(0,255,136,0.3))}50%{filter:drop-shadow(0 0 30px rgba(0,255,136,0.5))}}
 .welcome-title{font-size:28px;font-weight:800;letter-spacing:-.02em;background:linear-gradient(135deg,var(--green),var(--cyan));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 .welcome-sub{font-size:14px;color:var(--text-secondary);line-height:1.6;max-width:360px;font-family:var(--mono)}
-.chat{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;background:var(--bg-chat);display:flex;flex-direction:column;padding:12px 12px calc(12px + var(--safe-bottom))}
+.welcome-ver{font-size:11px;color:var(--text-tertiary);font-family:var(--mono);letter-spacing:.3px;line-height:1.6}
+.chat{flex:1;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;background:var(--bg-chat);display:flex;flex-direction:column;padding:12px 12px 90px}
 .chat:empty{display:flex;align-items:center;justify-content:center}
 .msg{display:flex;margin-bottom:8px;animation:msgIn .3s ease}
 .msg.user{justify-content:flex-end}.msg.agent{justify-content:flex-start}.msg.step{justify-content:flex-start;margin-bottom:4px}
@@ -81,7 +82,8 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
 .typing-dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:typing 1.4s infinite;opacity:0.4}
 .typing-dot:nth-child(2){animation-delay:.2s}.typing-dot:nth-child(3){animation-delay:.4s}
 @keyframes typing{0%,60%,100%{opacity:.3}30%{opacity:1}}
-.input-area{flex-shrink:0;background:var(--bg-input);border-top:1px solid var(--separator);padding:10px 12px 10px;display:flex;align-items:center;gap:10px}
+.input-area{position:fixed;bottom:0;left:0;width:100%;background:var(--bg-input);border-top:1px solid var(--separator);padding:0 !important;margin:0 !important;display:flex;align-items:center;gap:10px;z-index:9999;box-sizing:border-box}
+.input-area-inner{flex:1;display:flex;align-items:center;gap:10px;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px))}
 .input-field{flex:1;font-family:var(--mono);font-size:16px;line-height:1.4;padding:10px 16px;border:1px solid var(--separator-thick);border-radius:8px;outline:none;background:rgba(0,255,136,0.03);color:var(--text);transition:none;resize:none;overflow-y:hidden;min-height:42px;max-height:150px}
 .input-field:focus{border-color:rgba(0,255,136,0.4)}
 .input-field::placeholder{color:var(--text-tertiary)}
@@ -109,6 +111,29 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
 .modal-primary:active{opacity:.8}
 .modal-link{background:none;border:none;color:var(--cyan);font-size:13px;cursor:pointer;text-decoration:underline;font-family:var(--mono);padding:4px;transition:color .3s}
 .modal-link:hover{color:var(--green)}
+.settings-overlay{position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.settings-overlay.hidden{display:none}
+.settings-box{background:rgba(8,10,18,0.95);border-radius:12px;padding:28px 24px 20px;width:380px;max-width:100%;box-shadow:0 0 40px rgba(0,255,136,0.1),0 8px 40px rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:16px;animation:modalIn .35s ease;border:1px solid rgba(0,255,136,0.1)}
+.settings-title{font-size:20px;font-weight:700;text-align:center;margin-bottom:4px;background:linear-gradient(135deg,var(--green),var(--cyan));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.settings-label{font-size:13px;color:var(--text-secondary);font-family:var(--mono);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.settings-label i{color:var(--green);font-size:12px}
+.settings-select{padding:10px 14px;border:1px solid var(--separator-thick);border-radius:8px;font-size:14px;outline:none;font-family:var(--mono);background:rgba(0,255,136,0.03);color:var(--text);transition:all .3s;cursor:pointer;width:100%;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2300ff88' d='M6 9L1 4h10z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+.settings-select:focus{border-color:rgba(0,255,136,0.4);box-shadow:0 0 10px rgba(0,255,136,0.1)}
+.settings-select option{background:#0a0a0f;color:var(--text)}
+.settings-select:disabled{opacity:.4;cursor:not-allowed}
+.settings-info{font-size:11px;color:var(--text-tertiary);font-family:var(--mono);line-height:1.5;padding:8px 12px;background:rgba(0,255,136,0.03);border-radius:6px;border:1px solid var(--separator)}
+.settings-current{font-size:12px;color:var(--green);font-family:var(--mono);text-align:center;padding:6px;background:rgba(0,255,136,0.05);border-radius:6px;border:1px solid rgba(0,255,136,0.1)}
+.settings-actions{display:flex;gap:10px}
+.settings-btn{flex:1;padding:10px;border:none;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:all .3s;font-family:var(--mono)}
+.settings-btn.primary{background:var(--green);color:#000;box-shadow:0 0 15px rgba(0,255,136,0.2)}
+.settings-btn.primary:hover{box-shadow:0 0 25px rgba(0,255,136,0.3)}
+.settings-btn.secondary{background:transparent;color:var(--text-secondary);border:1px solid var(--separator)}
+.settings-btn.secondary:hover{color:var(--green);border-color:rgba(0,255,136,0.3)}
+.settings-group{border:1px solid var(--separator);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.settings-group-title{font-size:13px;font-weight:600;color:var(--green);font-family:var(--mono);display:flex;align-items:center;gap:6px}
+.settings-group-title i{font-size:14px}
+.settings-row{display:flex;flex-direction:column;gap:4px}
+.settings-box{width:420px}
 .fm-overlay{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
 .fm-overlay.hidden{display:none}
 .fm-panel{background:rgba(8,10,18,0.95);border-radius:12px;width:680px;max-width:100%;height:520px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 0 40px rgba(0,255,136,0.1),0 8px 40px rgba(0,0,0,0.5);animation:modalIn .35s ease;overflow:hidden;border:1px solid rgba(0,255,136,0.1)}
@@ -193,6 +218,7 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
       <span id="statusText">就绪</span>
     </div>
     <button id="clearBtn" class="clear-btn" title="重置会话" aria-label="重置会话">↺</button>
+    <button id="settingsBtn" class="clear-btn" title="设置" aria-label="设置">⚙</button>
   </div>
 
   <div id="mudStatusBar" class="mud-status-bar hidden">
@@ -211,12 +237,15 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
       <div class="welcome-icon">💬</div>
       <div class="welcome-title">CmdCode Agent</div>
       <div class="welcome-sub">访客模式 · 可直接使用 · 所有内容自动保存到共享文件夹 · 登录后可享 1GB 专属个人网盘</div>
+      <div class="welcome-ver" id="welcomeVer"></div>
     </div>
   </div>
 
   <div class="input-area">
-    <textarea id="userInput" class="input-field" rows="1" placeholder="输入任务..." autofocus></textarea>
-    <button id="sendBtn" class="send-btn" aria-label="发送">→</button>
+    <div class="input-area-inner">
+      <textarea id="userInput" class="input-field" rows="1" placeholder="输入任务..." autofocus></textarea>
+      <button id="sendBtn" class="send-btn" aria-label="发送">→</button>
+    </div>
   </div>
 </div>
 
@@ -251,6 +280,52 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
     <div class="modal-error" id="modalError"></div>
     <button class="modal-primary" id="modalSubmit">登录</button>
     <button class="modal-link" id="modalSwitch">没有账号？去注册</button>
+  </div>
+</div>
+
+<div class="settings-overlay hidden" id="settingsOverlay">
+  <div class="settings-box">
+    <div class="settings-title">⚙ 模型设置</div>
+    <div class="settings-current" id="settingsCurrent">当前: opencode-go / deepseek-v4-flash</div>
+
+    <div class="settings-group">
+      <div class="settings-group-title"><i class="fas fa-font"></i> 文字模型</div>
+      <div class="settings-row">
+        <div class="settings-label"><i class="fas fa-server"></i> 提供商套餐</div>
+        <select class="settings-select" id="textProvider">
+          <option value="opencode-go">OpenCode Go 套餐 1</option>
+          <option value="opencode-go1">OpenCode Go 套餐 2</option>
+          <option value="opencode-go2">OpenCode Go 套餐 3</option>
+          <option value="opencode-go3">OpenCode Go 套餐 4</option>
+          <option value="opencode-go4">OpenCode Go 套餐 5</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div class="settings-label"><i class="fas fa-microchip"></i> 可选模型</div>
+        <select class="settings-select" id="textModel"></select>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <div class="settings-group-title"><i class="fas fa-photo-film"></i> 多模态模型</div>
+      <div class="settings-row">
+        <div class="settings-label"><i class="fas fa-server"></i> 提供商套餐</div>
+        <select class="settings-select" id="mmProvider">
+          <option value="minimax">MiniMax 套餐 1</option>
+          <option value="minimax1">MiniMax 套餐 2</option>
+          <option value="minimax2">MiniMax 套餐 3</option>
+        </select>
+      </div>
+      <div class="settings-row">
+        <div class="settings-label"><i class="fas fa-microchip"></i> 可选模型</div>
+        <select class="settings-select" id="mmModel"></select>
+      </div>
+    </div>
+
+    <div class="settings-actions">
+      <button class="settings-btn secondary" id="settingsCancel">取消</button>
+      <button class="settings-btn primary" id="settingsSave">保存</button>
+    </div>
   </div>
 </div>
 
@@ -290,10 +365,37 @@ const quotaInfo=document.getElementById('quotaInfo');
 const mudStatusBar=document.getElementById('mudStatusBar');
 
 const PROXY_URL='https://cmdcode.cn/cmdcode-minimax-toolset/proxy.php';
-// 默认聊天 LLM 供应商（后端已实现五密钥 429 轮换 + 每日 7:00 自动轮换）
-// 轮换链：opencode-go → opencode-go1 → ... → opencode-go4
-// 前端只需发送供应商名，后端自动处理限流容灾和日切
-const CHAT_PROVIDER='opencode-go';
+// 聊天 LLM 供应商（可在设置页切换，保存到 localStorage）
+// 轮换链：opencode-go → opencode-go1 → ... → opencode-go4（5套餐）
+// minimax → minimax1 → minimax2（3套餐）
+const PROVIDER_MODELS={
+  'opencode-go':[
+    {value:'deepseek-v4-flash',label:'DeepSeek V4 Flash'},
+    {value:'deepseek-v4-pro',label:'DeepSeek V4 Pro'},
+    {value:'glm-5.1',label:'GLM-5.1'},
+    {value:'glm-5.2',label:'GLM-5.2'},
+    {value:'kimi-k2.7-code',label:'Kimi K2.7 Code'},
+    {value:'mimo-v2.5',label:'MiMo V2.5'},
+    {value:'mimo-v2.5-pro',label:'MiMo V2.5 Pro'},
+    {value:'minimax-m2.7',label:'MiniMax M2.7'},
+    {value:'minimax-m3',label:'MiniMax M3 (3x usage)'},
+    {value:'qwen3.6-plus',label:'Qwen3.6 Plus'},
+    {value:'qwen3.7-max',label:'Qwen3.7 Max'},
+    {value:'qwen3.7-plus',label:'Qwen3.7 Plus'},
+  ],
+  'minimax':[
+    {value:'MiniMax-M2.7',label:'MiniMax-M2.7'},
+    {value:'MiniMax-M3',label:'MiniMax-M3'},
+  ],
+};
+const PROVIDER_INFO={
+  'opencode-go':'5 个套餐密钥轮换，支持 DeepSeek/GLM/Kimi/MiMo/MiniMax/Qwen 等文字模型。后端自动处理 429 限流和每日轮换。',
+  'minimax':'3 个套餐密钥轮换，支持 MiniMax-M 系列多模态模型。适用于图片/视频/音乐生成。',
+};
+let CHAT_PROVIDER=localStorage.getItem('cmdcode_provider')||'opencode-go';
+let CHAT_MODEL=localStorage.getItem('cmdcode_model')||'deepseek-v4-flash';
+let MM_PROVIDER=localStorage.getItem('cmdcode_mm_provider')||'minimax';
+let MM_MODEL=localStorage.getItem('cmdcode_mm_model')||'MiniMax-M2.7';
 let accessToken='';  // 从服务器端获取，不硬编码在前端
 let isRunning=false;
 let abortController=null;
@@ -309,19 +411,25 @@ let lastToolCalls=null;
 let sessionHealthInterval=null;
 
 // ── Session 健康检查与自动重登 ──
+let _reauthing=null;
 async function attemptReauth(){
-  try{
-    const res=await apiCall('session',{},{ignoreStop:true});
-    if(res.loggedIn){accessToken=res.token||'';if(accessToken)addAgentMessage('🔄 会话已恢复');return true;}
-    if(currentUser&&currentUser.username){
-      const tok=await apiCall('login',{username:currentUser.username,password:''},{ignoreStop:true});
-      if(tok&&tok.token){accessToken=tok.token;addAgentMessage('🔄 令牌已刷新');return true;}
-    }
-  }catch(e){}
-  // 会话已过期，需要重新登录
-  currentUser=null;accessToken='';updateUIForUser(null);
-  addAgentMessage('⚠️ 登录已过期，请重新登录。');
-  return false;
+  // 重入保护：并发 401 时只触发一次 reauth，其他等待结果
+  if(_reauthing)return _reauthing;
+  _reauthing=(async()=>{
+    try{
+      const res=await apiCall('session',{},{ignoreStop:true});
+      if(res.loggedIn){accessToken=res.token||'';if(accessToken)addAgentMessage('🔄 会话已恢复');return true;}
+      if(currentUser&&currentUser.username){
+        const tok=await apiCall('login',{username:currentUser.username,password:''},{ignoreStop:true});
+        if(tok&&tok.token){accessToken=tok.token;addAgentMessage('🔄 令牌已刷新');return true;}
+      }
+    }catch(e){}
+    // 会话已过期，需要重新登录
+    currentUser=null;accessToken='';updateUIForUser(null);
+    addAgentMessage('⚠️ 登录已过期，请重新登录。');
+    return false;
+  })();
+  try{return await _reauthing;}finally{_reauthing=null;}
 }
 
 function startSessionHealthCheck(){
@@ -535,7 +643,7 @@ async function apiCall(action,data={},opts={}){
         signal:opts.signal||ctrl.signal
       });
       done=true;clearTimeout(timer);
-      let raw;try{result=await resp.json();}catch(e){raw=await resp.text().catch(()=>'');throw new Error('响应解析失败 (HTTP '+resp.status+'): '+(raw||e.message).slice(0,200));}
+      let result;try{result=await resp.json();}catch(e){const raw=await resp.text().catch(()=>'');throw new Error('响应解析失败 (HTTP '+resp.status+'): '+(raw||e.message).slice(0,200));}
       if(!resp.ok||result.error){
         const errMsg=result.error||'请求失败 (HTTP '+resp.status+')';
         if(resp.status===401||resp.status===403||(result.error&&(result.error.includes('token')||result.error.includes('认证')))){
@@ -770,7 +878,7 @@ class ThinkingModeHandler{
     return{thinking:{type:'enabled'},reasoning_effort:reasoningEffort};
   }
   static extractReasoning(message){return message.reasoning_content||null;}
-  static supportsThinking(model){return model.includes('deepseek-v4');}
+  static supportsThinking(model){return model.includes('deepseek')||model.includes('glm-5')||model.includes('qwen3.7');}
 }
 
 // ── Agent Drift Guard ──
@@ -1034,7 +1142,7 @@ async function syncServerAndOPFS(){
   _syncing=true;
   let pulled=0,pushed=0,deletedFromServer=0,failedFiles=[];
   try{
-  addStepMessage('🔄 开始同步...');
+  addStepMessage('🔄 开始同步... [sync v3]');
   
   // 1. 从服务器拉取所有文件列表
   const serverRawFiles=[];
@@ -1144,7 +1252,31 @@ async function syncServerAndOPFS(){
   }
   
   // 4. OPFS 有但服务器没有 → 推送（使用去重后的路径）
-  const toPush=opfsFiles.filter(f=>!serverFiles.includes(f));
+  let toPush=opfsFiles.filter(f=>!serverFiles.includes(f));
+  
+  // 4.1 预验证：逐个检查文件可读性，不可读的幽灵条目直接清理出列表
+  if(toPush.length>0){
+    const validated=[];
+    for(const f of toPush){
+      // 非法文件名（含 shell 管道/重定向符/空格）：直接清理
+      if(/[|>&]/.test(f)||/\s/.test(f.split('/').pop())){
+        addStepMessage('  🧹 清理非法文件名: '+f);
+        try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e){}
+        continue;
+      }
+      // 验证文件可读
+      try{
+        const absPath=_fileSystem.resolvePath(f);
+        const fh=await _fileSystem.getFileHandle(absPath);
+        await fh.getFile();
+        validated.push(f);
+      }catch(e){
+        addStepMessage('  🧹 清理幽灵文件: '+f+' ('+e.message.slice(0,40)+')');
+        try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e2){}
+      }
+    }
+    toPush=validated;
+  }
   
   if(toPush.length>0){
     addStepMessage('📤 需要推送: '+toPush.length+' 个文件');
@@ -1170,7 +1302,9 @@ async function syncServerAndOPFS(){
           addStepMessage('✓ '+f);
         }
       }catch(e){
-        failedFiles.push({file:f,action:'推送',error:e.message});
+        // 推送过程中读取又失败（极小概率）：清理并跳过，不计入失败
+        addStepMessage('  🧹 推送时读取失败，清理: '+f);
+        try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e2){}
       }
     }
   }
@@ -1211,7 +1345,14 @@ class BashExecutor{
   constructor(vfs){this.vfs=vfs;}
   parseCommand(cmd){
     const args=[];const re=/"([^"]*)"|'([^']*)'|(\S+)/g;let m;
-    while((m=re.exec(cmd))!==null)args.push(m[1]||m[2]||m[3]);
+    while((m=re.exec(cmd))!==null){
+      let tok=m[1]||m[2]||m[3];
+      // 遇到 shell 管道/重定向符即截断：本沙箱不支持管道，后续命令对当前命令无意义
+      if(tok==='|'||tok==='||'||tok==='&&'||tok==='>'||tok==='>>'||tok==='<'||/^[12]?>?$/.test(tok)||/^[12]>&\d+$/.test(tok))break;
+      // 过滤掉被误拆的重定向残片，如 2>&1、1>、2>、&1
+      if(/^[12]?>$/.test(tok)||/^[12]>&\d+$/.test(tok)||/^&\d+$/.test(tok))continue;
+      args.push(tok);
+    }
     return args;
   }
   async exec(cmd){
@@ -1495,7 +1636,7 @@ class BashExecutor{
     const pattern=nameIdx>=0?p[nameIdx+1]:'*';
     const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1]))||'.';
     const abs=this.vfs.resolvePath(startDir);
-    const regex=new RegExp('^'+pattern.replace(/\*/g,'.*').replace(/\?/g,'.')+'$');
+    const regex=new RegExp('^'+pattern.replace(/\*/g,'\x00').replace(/\?/g,'\x01').replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\x00/g,'.*').replace(/\x01/g,'.')+'$');
     const results=[];
     const scan=async(dirHandle,prefix)=>{
       for await(const[name,handle]of dirHandle.entries()){
@@ -1854,7 +1995,7 @@ const toolHandlers={
   async web_search(args,ctx){
     if(_webSearchQuotaExhausted)return '网络搜索暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     try{
-    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'system',content:'你是一个搜索助手。以JSON格式返回：{"results":[{"title":"标题","url":"链接","snippet":"摘要"}]}。不要使用工具调用，直接返回JSON。'},{role:'user',content:args.query}],temperature:.3,max_tokens:8192});
+    const data=await proxyRequest(MM_PROVIDER,'/chat/completions',{model:MM_MODEL,messages:[{role:'system',content:'你是一个搜索助手。以JSON格式返回：{"results":[{"title":"标题","url":"链接","snippet":"摘要"}]}。不要使用工具调用，直接返回JSON。'},{role:'user',content:args.query}],temperature:.3,max_tokens:8192});
     let content=data.choices?.[0]?.message?.content||'';
     content=content.replace(/<thinking>[\s\S]*?<\/thinking>/g,'').trim();
     const jsonMatch=content.match(/\{[^]*"results"[^]*\}/);
@@ -1871,14 +2012,14 @@ const toolHandlers={
       if(proxyImg.success&&proxyImg.data_url)imgUrl=proxyImg.data_url;
     }catch(e){/* 回退：直接用原始 URL */}
     try{
-    const data=await proxyRequest('minimax','/chat/completions',{model:'MiniMax-M2.7',messages:[{role:'user',content:[{type:'text',text:args.question||'这张图片里有什么？'},{type:'image_url',image_url:{url:imgUrl}}]}],max_tokens:4096});
+    const data=await proxyRequest(MM_PROVIDER,'/chat/completions',{model:MM_MODEL,messages:[{role:'user',content:[{type:'text',text:args.question||'这张图片里有什么？'},{type:'image_url',image_url:{url:imgUrl}}]}],max_tokens:4096});
     return data.choices?.[0]?.message?.content||'无识别结果';
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_visionQuotaExhausted=true;return '图像识别失败，所有 API Key 配额已用尽';}return '图像识别出错: '+e.message;}
   },
   async image_generation(args,ctx){
     if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     try{
-    const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:args.aspect_ratio||'1:1',n:args.n||1,response_format:'url'};if(args.seed)imgBody.seed=args.seed;if(args.prompt_optimizer)imgBody.prompt_optimizer=true;if(args.width&&args.height){imgBody.width=args.width;imgBody.height=args.height;delete imgBody.aspect_ratio;}if(args.aigc_watermark)imgBody.aigc_watermark=true;const data=await proxyRequest('minimax','/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
+    const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:args.aspect_ratio||'1:1',n:args.n||1,response_format:'url'};if(args.seed)imgBody.seed=args.seed;if(args.prompt_optimizer)imgBody.prompt_optimizer=true;if(args.width&&args.height){imgBody.width=args.width;imgBody.height=args.height;delete imgBody.aspect_ratio;}if(args.aigc_watermark)imgBody.aigc_watermark=true;const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
     const urls=data.data?.image_urls||[];
     const failed=data.data?.failed_count||0;
     if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张失败)';
@@ -1911,7 +2052,7 @@ const toolHandlers={
     for(let retry=0;retry<3;retry++){
       if(stopRequested)return '操作已取消';
     // Step 1: 异步提交
-    const createResp=await proxyRequest('minimax','/video_submit',vidBody,30000);
+    const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',vidBody,30000);
     if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交...');await new Promise(r=>setTimeout(r,5000));continue;}
     if(createResp.error)return '视频生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;if(!taskId)return '视频生成失败：未获取到任务ID';
@@ -1919,7 +2060,7 @@ const toolHandlers={
     const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
     while(Date.now()-start<MAX_WAIT){
       await new Promise(r=>setTimeout(r,delay));if(stopRequested)return '操作已取消';
-      const pollResp=await proxyRequest('minimax','/video_poll',{task_id:taskId},15000);
+      const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
       lastResp=pollResp;break;
     }
@@ -1934,7 +2075,7 @@ const toolHandlers={
     const br_v=lastResp.base_resp||{};
     if(br_v.status_code&&br_v.status_code!==0)return '视频生成失败: '+(br_v.status_msg||'错误码 '+br_v.status_code);
     let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
-    if(!url&&lastResp.file_id){try{const fi=await proxyRequest('minimax','/files/retrieve?file_id='+lastResp.file_id,{});url=fi.file?.download_url||fi.download_url||'';}catch(e){}}
+    if(!url&&lastResp.file_id){try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{});url=fi.file?.download_url||fi.download_url||'';}catch(e){}}
     if(url){const f=await saveMediaToUser(url,'videos','mp4');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
     return '视频生成完成但无URL'+(lastResp._http_code?' (HTTP '+lastResp._http_code+')':'');
     } // end retry loop
@@ -1955,7 +2096,7 @@ const toolHandlers={
     const fullPrompt=structured.length>0?(args.prompt?args.prompt+'. '+structured.join('. '):structured.join('. ')):args.prompt;
     const body={model:'music-2.6',prompt:fullPrompt};if(args.lyrics)body.lyrics=args.lyrics;if(args.instrumental)body.is_instrumental=true;else if(!args.lyrics&&!args.lyrics_optimizer)body.is_instrumental=true;if(args.lyrics_optimizer)body.lyrics_optimizer=true;body.audio_setting={format:'mp3',sample_rate:44100,bitrate:256000};body.output_format='url';
     // Step 1: 异步创建音乐任务（proxy.php 立即返回 task_id，后台 worker 慢慢等 MiniMax）
-    const createResp=await proxyRequest('minimax','/music_generation',body,30000);
+    const createResp=await proxyRequest(MM_PROVIDER,'/music_generation',body,30000);
     if(createResp.error)return '音乐生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;
     if(!taskId)return '音乐生成失败：未获取到任务ID';
@@ -1967,7 +2108,7 @@ const toolHandlers={
     while(Date.now()-start<MAX_WAIT){
       await new Promise(r=>setTimeout(r,delay));
       if(stopRequested)return '操作已取消';
-      const pollResp=await proxyRequest('minimax','/music_poll',{task_id:taskId},15000);
+      const pollResp=await proxyRequest(MM_PROVIDER,'/music_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
       // 有结果了（成功或失败）
       lastResp=pollResp;
@@ -1988,7 +2129,7 @@ const toolHandlers={
   async text_to_speech(args,ctx){
     if(_ttsQuotaExhausted)return '语音生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     try{
-      const data=await proxyRequest('minimax','/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:args.speed||1.0},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
+      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:args.speed||1.0},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
       const baseResp=data.base_resp||{};
       if(baseResp.status_code&&baseResp.status_code!==0){
         const errMsg=baseResp.status_msg||'未知错误';
@@ -2489,16 +2630,16 @@ async function runAgentLoop(userMessage){
     // 记录用户消息用于后续提取
     recentConversationMessages.push({role:'user',content:userMessage,time:Date.now()});
   }
-  const MAX_LOOPS=Infinity;let loopCount=0;let consecutiveFailures=0;lastToolCalls=null;executor.toolFailCounts={};
+  const MAX_LOOPS=500;let loopCount=0;let consecutiveFailures=0;lastToolCalls=null;executor.toolFailCounts={};
   const recentToolHashes=[];const recentResponses=[];const MAX_HISTORY=5;
   try{
   while(loopCount<MAX_LOOPS){
     loopCount++;
     if(stopRequested){addStepMessage('⏹ 已停止');break;}
-// MUD 模式仍用 deepseek-v4-flash 作为 agent loop 模型（需要可靠 tool calling）
-// 配图/配音等由工具处理器直接调用 MiniMax 专用端点，不依赖 agent loop 模型
+    if(loopCount===450){addStepMessage('⚠️ 已循环 450 轮，接近上限 ('+MAX_LOOPS+')，请考虑简化任务');}
+// Agent loop 模型（从设置页读取，可在运行中切换）
 const activeProvider=CHAT_PROVIDER;
-const activeModel='deepseek-v4-flash';
+const activeModel=CHAT_MODEL;
 // MUD 模式：只追加模式，不压缩历史，所有对话记录一次不差发给LLM
 
     addStepMessage('Agent 循环 #'+loopCount+'：正在调用 '+activeModel+'...');
@@ -2724,7 +2865,7 @@ const activeModel='deepseek-v4-flash';
     if(allFailed&&toolCalls.length>0){consecutiveFailures++;addStepMessage('⚠️ 本轮 '+toolCalls.length+' 个工具全部执行失败（连续 '+consecutiveFailures+' 轮）');if(consecutiveFailures>=2){addAgentMessage('工具连续执行失败，已停止。');break;}}else{consecutiveFailures=0;}
     messages.push(...results);
   }
-  if(loopCount>=100)addAgentMessage('⚠️ 循环次数过多 ('+loopCount+')，建议检查任务是否过于复杂。');
+  if(loopCount>=MAX_LOOPS&&!stopRequested){addAgentMessage('⚠️ 任务未在 '+MAX_LOOPS+' 轮内完成，可能过于复杂或陷入循环。请尝试拆分任务或换种方式描述。');}
   // ── 安全网：如果循环结束时仍有未消费的pending media，立即消费 ──
   if(mudActive&&_mudPendingImage){const imgUrls=_mudPendingImage;_mudPendingImage=null;if(Array.isArray(imgUrls))imgUrls.forEach(u=>addImageMessage(u));else addImageMessage(imgUrls);}
   if(mudActive&&_mudPendingVoice){const voiceUrl=_mudPendingVoice;_mudPendingVoice=null;addAgentMessage('🔊 [语音]('+voiceUrl+')');}
@@ -3019,6 +3160,54 @@ loginBtn.addEventListener('click',()=>showModal('login'));
 modalSubmit.addEventListener('click',handleAuth);
 modalSwitch.addEventListener('click',()=>showModal(modalMode==='login'?'register':'login'));
 modalOverlay.addEventListener('click',(e)=>{if(e.target===modalOverlay)hideModal();});
+
+// ── 设置弹窗逻辑（两组：文字模型 + 多模态模型）──
+const settingsOverlay=document.getElementById('settingsOverlay');
+const textProvider=document.getElementById('textProvider');
+const textModel=document.getElementById('textModel');
+const mmProvider=document.getElementById('mmProvider');
+const mmModel=document.getElementById('mmModel');
+const settingsCurrent=document.getElementById('settingsCurrent');
+const settingsBtn=document.getElementById('settingsBtn');
+const settingsSave=document.getElementById('settingsSave');
+const settingsCancel=document.getElementById('settingsCancel');
+
+function fillModelDropdown(selectEl,models,selectedValue){
+  selectEl.innerHTML=models.map(m=>'<option value="'+m.value+'">'+m.label+'</option>').join('');
+  const valid=models.some(m=>m.value===selectedValue);
+  selectEl.value=valid?selectedValue:(models[0]?.value||'');
+}
+function updateSettingsCurrent(){
+  settingsCurrent.textContent='文字: '+CHAT_PROVIDER+' / '+CHAT_MODEL+'  |  多模态: '+MM_PROVIDER+' / '+MM_MODEL;
+}
+function openSettings(){
+  textProvider.value=CHAT_PROVIDER.startsWith('opencode-go')?CHAT_PROVIDER:'opencode-go';
+  fillModelDropdown(textModel,PROVIDER_MODELS['opencode-go'],CHAT_MODEL);
+  mmProvider.value=MM_PROVIDER.startsWith('minimax')?MM_PROVIDER:'minimax';
+  fillModelDropdown(mmModel,PROVIDER_MODELS['minimax'],MM_MODEL);
+  updateSettingsCurrent();
+  settingsOverlay.classList.remove('hidden');
+}
+function closeSettings(){settingsOverlay.classList.add('hidden');}
+settingsBtn.addEventListener('click',openSettings);
+settingsCancel.addEventListener('click',closeSettings);
+textProvider.addEventListener('change',()=>{fillModelDropdown(textModel,PROVIDER_MODELS['opencode-go'],textModel.value);});
+mmProvider.addEventListener('change',()=>{fillModelDropdown(mmModel,PROVIDER_MODELS['minimax'],mmModel.value);});
+settingsSave.addEventListener('click',()=>{
+  CHAT_PROVIDER=textProvider.value;
+  CHAT_MODEL=textModel.value;
+  MM_PROVIDER=mmProvider.value;
+  MM_MODEL=mmModel.value;
+  localStorage.setItem('cmdcode_provider',CHAT_PROVIDER);
+  localStorage.setItem('cmdcode_model',CHAT_MODEL);
+  localStorage.setItem('cmdcode_mm_provider',MM_PROVIDER);
+  localStorage.setItem('cmdcode_mm_model',MM_MODEL);
+  updateSettingsCurrent();
+  closeSettings();
+  addStepMessage('⚙ 已切换 — 文字: '+CHAT_MODEL+'  多模态: '+MM_MODEL);
+});
+settingsOverlay.addEventListener('click',(e)=>{if(e.target===settingsOverlay)closeSettings();});
+updateSettingsCurrent(); // 页面加载时更新当前模型显示
 modalPassword.addEventListener('keypress',(e)=>{if(e.key==='Enter')handleAuth();});
 sendBtn.addEventListener('click',()=>{
   const text=userInput.value.trim();
@@ -3150,17 +3339,6 @@ async function shareCurrentImage(){
   ivShareBtn.disabled=false;
 }
 
-// ── iOS 键盘适配：visualViewport 动态调整 .app 高度 ──
-if(window.visualViewport){
-  const appEl=document.querySelector('.app');
-  function onVpResize(){
-    if(appEl)appEl.style.height=window.visualViewport.height+'px';
-  }
-  window.visualViewport.addEventListener('resize',onVpResize);
-  window.visualViewport.addEventListener('scroll',onVpResize);
-  onVpResize();
-}
-
 // ── 会话结束：关闭页面或退出时触发记忆提取 ──
 window.addEventListener('beforeunload',function(){
   if(currentUser&&recentConversationMessages.length>=2){
@@ -3238,6 +3416,13 @@ document.getElementById('mudBtnLoad').addEventListener('click',function(){
 
 // ── Debug: expose key state for DevTools ──
 window.__ui2Debug={get currentUser(){return currentUser;},get accessToken(){return accessToken;},get isRunning(){return isRunning;},get currentSession(){return currentSession;},get mudActive(){return mudActive;},showModal,openFileManager,closeFileManager,runAgentLoop};
+
+// ── 版本号（刷新可见，便于确认是否为最新版本）──
+const APP_VERSION='v1.2.2';
+(function(){
+  const el=document.getElementById('welcomeVer');
+  if(el)el.textContent=APP_VERSION;
+})();
 
 // ── Init ──
 (async()=>{
