@@ -74,8 +74,8 @@ The AI agent will automatically handle everything:
 ### Deployment Steps
 
 1. Clone the repository to your web server directory.
-2. Edit `config.enc.php`, set a strong random passphrase, and write your API Key into the encrypted storage.
-3. Modify `ACCESS_TOKEN` and the domain whitelist in `proxy.php`.
+2. Edit `config.enc.php`, set a strong random passphrase, and write your API Key and ACCESS_TOKEN into the encrypted storage.
+3. `proxy.php` auto-loads ACCESS_TOKEN and domain whitelist from `config.enc.php` — no manual modification needed.
 4. Import the required database tables (auto-created, or manually run `CREATE TABLE IF NOT EXISTS ...`).
 5. Configure Crontab:
    ```cron
@@ -130,7 +130,7 @@ All MiniMax API calls implement automatic triple-key rotation:
 
 ```
 cmdcode-solo/
-ui.html                        # Full frontend Agent with memory retrieval (~188KB)
+├── ui.html                        # Full frontend Agent with memory retrieval (~196KB)
 ├── proxy.php                      # API proxy + memory system core (~92KB)
 ├── config.enc.php                 # AES-256-CBC encrypted configuration (DB creds + API keys)
 ├── .htaccess                      # Apache/LiteSpeed security rules
@@ -147,8 +147,8 @@ ui.html                        # Full frontend Agent with memory retrieval (~188
 
 | File | Size | Description |
 |:-----|:-----|:------------|
-| **ui.html** | ~91 KB | Frontend chat interface, zero framework dependencies. Built-in AI Agent conversation, file manager, image viewer, audio/video playback, user authentication, multimodal tools (text-to-image/video/music/voice), 3-key rate-limit rotation, session-level quota exhaustion guard |
-| **proxy.php** | ~78 KB | Multi-provider API proxy, solves browser CORS. Supports MiniMax (triple-key rotation failover) and OpenCode Go, includes user auth, file system, memory system, remote Bash, share links, web scraping, full video/music async pipeline, MUD game engine |
+| **ui.html** | ~196 KB | Frontend chat interface, zero framework dependencies. Built-in AI Agent conversation, file manager, image viewer, audio/video playback, user authentication, model settings panel, multimodal tools (text-to-image/video/music/voice), 3-key rate-limit rotation, session-level quota exhaustion guard |
+| **proxy.php** | ~92 KB | Multi-provider API proxy, solves browser CORS. Supports MiniMax (triple-key rotation failover) and OpenCode Go, includes dynamic encrypted config loading (config.enc.php), user auth, file system, memory system, remote Bash, share links, web scraping, full video/music async pipeline, MUD game engine. PHP timeout extended to 300s for DeepSeek V4 million-token context |
 | **config.enc.php** | ~2.5 KB | AES-256-CBC encrypted configuration, contains MySQL credentials, ACCESS_TOKEN, API keys (keys never stored in plaintext) |
 | **.htaccess** | ~500 B | Apache/LiteSpeed security rules: blocks direct `.enc.php` and hidden file access, protects `.htaccess` itself |
 
