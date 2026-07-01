@@ -1138,20 +1138,23 @@ function dedupPath(path){
   return isAbs?'/'+result:result;
 }
 async function syncServerAndOPFS(){
+  if(_syncing){addStepMessage('⚠️ 同步正在进行中，请等待完成');return;}
   if(!await _ensureFS()){throw new Error('OPFS 不可用，请使用支持 OPFS 的现代浏览器');}
   _syncing=true;
   let pulled=0,pushed=0,deletedFromServer=0,failedFiles=[];
   try{
-  addStepMessage('🔄 开始同步... [sync v3]');
+  addStepMessage('🔄 开始同步... [sync v11]');
   
-  // 1. 从服务器拉取所有文件列表
+  // 1. 从服务器拉取所有文件列表（含修改时间 mtime）
   const serverRawFiles=[];
   try{
-    async function listServer(dir){
+    async function listServer(dir,depth=0){
+      if(depth>20){addStepMessage('⚠️ 目录嵌套超过20层，跳过: '+dir);return;}
       const res=await apiCall('list_files',{path:dir},{ignoreStop:true});
       for(const e of(res.files||[])){
-        if(e.is_dir)await listServer(e.path);
-        else serverRawFiles.push(e.path);
+        if(!e||!e.path)continue;
+        if(e.is_dir)await listServer(e.path,depth+1);
+        else serverRawFiles.push({path:e.path,mtime:e.mtime||''});
       }
     }
     await listServer('');
@@ -1162,23 +1165,31 @@ async function syncServerAndOPFS(){
     return;
   }
   
-  // 1.5 去重服务器路径
-  const serverFiles=[];
+  // 1.5 去重服务器路径（保留 mtime）
+  const serverFiles=[]; // 路径列表（需有序遍历时用）
+  const serverFileSet=new Set(); // O(1) 查找
+  const serverFileMap=new Map(); // path → {path, mtime}
   const serverDeduped=[];
+  const serverDedupedMap=new Map(); // fixed → raw（O(1) 查找）
   for(const raw of serverRawFiles){
-    const fixed=dedupPath(raw);
-    if(!serverFiles.includes(fixed))serverFiles.push(fixed);
-    if(fixed!==raw)serverDeduped.push({raw,fixed});
+    const fixed=dedupPath(raw.path);
+    if(!serverFileSet.has(fixed)){serverFileSet.add(fixed);serverFiles.push(fixed);serverFileMap.set(fixed,{path:fixed,mtime:raw.mtime});}
+    if(fixed!==raw.path){serverDeduped.push({raw:raw.path,fixed});serverDedupedMap.set(fixed,raw.path);}
   }
   
-  // 2. 从 OPFS 递归获取所有文件列表（sandbox 内）
+  // 2. 从 OPFS 递归获取所有文件列表（含修改时间 lastModified）
   const opfsRawFiles=[];
   try{
-    async function listOPFS(dirHandle,prefix){
+    async function listOPFS(dirHandle,prefix,depth=0){
+      if(depth>20)return;
       for await(const[name,handle]of dirHandle.entries()){
         const path=prefix?prefix+'/'+name:name;
-        if(handle.kind==='directory')await listOPFS(handle,path);
-        else opfsRawFiles.push(path);
+        if(handle.kind==='directory')await listOPFS(handle,path,depth+1);
+        else{
+          let mtime=0;
+          try{const f=await handle.getFile();mtime=f.lastModified||0;}catch(e){}
+          opfsRawFiles.push({path,mtime});
+        }
       }
     }
     const sandboxHandle=await _fileSystem.getDirHandle('/sandbox');
@@ -1191,12 +1202,19 @@ async function syncServerAndOPFS(){
   
   // 2.5 修复 OPFS 中的重复路径并迁移文件
   const BINARY_EXTS=new Set(['jpg','jpeg','png','gif','webp','bmp','svg','ico','avif','mp3','wav','ogg','m4a','aac','flac','wma','mp4','webm','mov','avi','mkv','flv','zip','tar','gz','rar','7z','pdf','exe','dll','so','dylib','bin']);
+  function isBinaryFile(f){
+    if(!f||!f.includes('.'))return false;
+    const ext=f.split('.').pop().toLowerCase();
+    return BINARY_EXTS.has(ext);
+  }
   const opfsFiles=[];
+  const opfsFileSet=new Set(); // O(1) 查找
+  const opfsFileMap=new Map(); // path → {path, mtime}
   const opfsDeduped=[]; 
   for(const raw of opfsRawFiles){
-    const fixed=dedupPath(raw);
-    if(!opfsFiles.includes(fixed))opfsFiles.push(fixed);
-    if(fixed!==raw)opfsDeduped.push({raw,fixed});
+    const fixed=dedupPath(raw.path);
+    if(!opfsFileSet.has(fixed)){opfsFileSet.add(fixed);opfsFiles.push(fixed);opfsFileMap.set(fixed,{path:fixed,mtime:raw.mtime});}
+    if(fixed!==raw.path)opfsDeduped.push({raw:raw.path,fixed});
   }
   const allDeduped=[...serverDeduped,...opfsDeduped];
   if(allDeduped.length>0){
@@ -1207,52 +1225,112 @@ async function syncServerAndOPFS(){
     try{
       const absRaw='/sandbox/'+raw;
       const absFixed='/sandbox/'+fixed;
-      const content=await _fileSystem.readFile(absRaw);
-      await _fileSystem.writeFile(absFixed,content,false,true);
+      // 二进制文件用 arrayBuffer 读写，避免 .text() 损坏内容
+      if(isBinaryFile(raw)){
+        const fh=await _fileSystem.getFileHandle(absRaw);
+        const file=await fh.getFile();
+        const buf=await file.arrayBuffer();
+        const fhDst=await _fileSystem.getFileHandle(absFixed,true);
+        const w=await fhDst.createWritable();
+        await w.write(buf);
+        await w.close();
+      }else{
+        const content=await _fileSystem.readFile(absRaw);
+        await _fileSystem.writeFile(absFixed,content,false,true);
+      }
       await _fileSystem.deleteEntry(absRaw);
+      // 迁移后重新获取 mtime，更新 fileMap（写入操作会更新 lastModified）
+      try{const fh=await _fileSystem.getFileHandle(absFixed);const f=await fh.getFile();opfsFileMap.set(fixed,{path:fixed,mtime:f.lastModified||0});}catch(e){}
       addStepMessage('  ↳ '+raw+' → '+fixed);
     }catch(e){
       addStepMessage('  ⚠️ 迁移失败: '+raw+' → '+fixed+' ('+e.message+')');
     }
   }
   
+  // 辅助函数：从服务器拉取文件到本地
+  async function pullFile(f,srcPath){
+    const isBin=isBinaryFile(f);
+    if(isBin){
+      const dlCtrl=new AbortController();const dlTimer=setTimeout(()=>dlCtrl.abort(),60000);
+      const resp=await fetch(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(srcPath)+'&_token='+accessToken,{signal:dlCtrl.signal});
+      clearTimeout(dlTimer);
+      if(!resp.ok)throw new Error('HTTP '+resp.status);
+      const blob=await resp.blob();const buf=await blob.arrayBuffer();
+      const fh=await _fileSystem.getFileHandle(_fileSystem.resolvePath(f),true);
+      const w=await fh.createWritable();await w.write(buf);await w.close();
+    }else{
+      const res=await apiCall('file_read',{file_path:srcPath},{ignoreStop:true});
+      if(!res||res.content===undefined)throw new Error('服务器返回空内容');
+      await _fileSystem.writeFile(_fileSystem.resolvePath(f),res.content,false,true);
+    }
+  }
+  // 辅助函数：从本地推送文件到服务器
+  async function pushFile(f){
+    const isBin=isBinaryFile(f);
+    let content;
+    const absPath=_fileSystem.resolvePath(f);
+    if(isBin){
+      const fh=await _fileSystem.getFileHandle(absPath);
+      const file=await fh.getFile();const buf=await file.arrayBuffer();
+      content=arrayBufferToBase64(buf);
+    }else{
+      content=await _fileSystem.readFile(absPath);
+    }
+    const res=await apiCall('file_write',{file_path:f,content,_binary:isBin},{ignoreStop:true});
+    if(res&&res.error)throw new Error(res.error);
+  }
+
   // 3. 服务器有但 OPFS 没有 → 拉取（使用去重后的路径）
-  const toPull=serverFiles.filter(f=>!opfsFiles.includes(f));
+  const toPull=serverFiles.filter(f=>!opfsFileSet.has(f));
   
   if(toPull.length>0){
     addStepMessage('📥 需要拉取: '+toPull.length+' 个文件');
     for(const f of toPull){
-      const srcPath=serverDeduped.find(d=>d.fixed===f)?.raw||f;
+      if(stopRequested){addStepMessage('⏹ 同步已停止');break;}
+      const srcPath=serverDedupedMap.get(f)||f;
       try{
-        const ext=f.split('.').pop().toLowerCase();
-        const isBin=BINARY_EXTS.has(ext);
-        if(isBin){
-          const resp=await fetch(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(srcPath)+'&_token='+accessToken);
-          if(!resp.ok)throw new Error('HTTP '+resp.status);
-          const blob=await resp.blob();
-          const buf=await blob.arrayBuffer();
-          const fh=await _fileSystem.getFileHandle(_fileSystem.resolvePath(f),true);
-          const w=await fh.createWritable();
-          await w.write(buf);
-          await w.close();
-          pulled++;
-          addStepMessage('✓ '+f);
-        }else{
-          const res=await apiCall('file_read',{file_path:srcPath},{ignoreStop:true});
-          if(res&&res.content!==undefined){
-            await _fileSystem.writeFile(_fileSystem.resolvePath(f),res.content,false,true);
-            pulled++;
-            addStepMessage('✓ '+f);
-          }
-        }
+        await pullFile(f,srcPath);
+        pulled++;
+        addStepMessage('✓ '+f);
       }catch(e){
         failedFiles.push({file:f,action:'拉取',error:e.message});
       }
     }
   }
   
+  // 3.5 双方都有的文件：比较修改时间，以最新的为准同步
+  const bothFiles=opfsFiles.filter(f=>serverFileSet.has(f));
+  if(bothFiles.length>0){
+    let toPullUpdate=0,toPushUpdate=0;
+    for(const f of bothFiles){
+      if(stopRequested){addStepMessage('⏹ 同步已停止');break;}
+      const sInfo=serverFileMap.get(f);
+      const oInfo=opfsFileMap.get(f);
+      if(!sInfo||!oInfo)continue;
+      const sTime=sInfo.mtime?new Date(sInfo.mtime.replace(' ','T')+'+08:00').getTime()||0:0;
+      const oTime=oInfo.mtime||0;
+      if(sTime>oTime+1000){
+        try{
+          const srcPath=serverDedupedMap.get(f)||f;
+          await pullFile(f,srcPath);
+          pulled++;toPullUpdate++;
+          addStepMessage('⬇ '+f);
+        }catch(e){failedFiles.push({file:f,action:'拉取(更新)',error:e.message});}
+      }else if(oTime>sTime+1000){
+        try{
+          await pushFile(f);
+          pushed++;toPushUpdate++;
+          addStepMessage('⬆ '+f);
+        }catch(e){failedFiles.push({file:f,action:'推送(更新)',error:e.message});}
+      }
+    }
+    if(toPullUpdate>0||toPushUpdate>0){
+      addStepMessage('🔄 时间戳比较: 拉取更新 '+toPullUpdate+' 个, 推送更新 '+toPushUpdate+' 个');
+    }
+  }
+  
   // 4. OPFS 有但服务器没有 → 推送（使用去重后的路径）
-  let toPush=opfsFiles.filter(f=>!serverFiles.includes(f));
+  let toPush=opfsFiles.filter(f=>!serverFileSet.has(f));
   
   // 4.1 预验证：逐个检查文件可读性，不可读的幽灵条目直接清理出列表
   if(toPush.length>0){
@@ -1281,38 +1359,30 @@ async function syncServerAndOPFS(){
   if(toPush.length>0){
     addStepMessage('📤 需要推送: '+toPush.length+' 个文件');
     for(const f of toPush){
+      if(stopRequested){addStepMessage('⏹ 同步已停止');break;}
       try{
-        const ext=f.split('.').pop().toLowerCase();
-        const isBin=BINARY_EXTS.has(ext);
-        let content;
-        const absPath=_fileSystem.resolvePath(f);
-        if(isBin){
-          const fh=await _fileSystem.getFileHandle(absPath);
-          const file=await fh.getFile();
-          const buf=await file.arrayBuffer();
-          content=arrayBufferToBase64(buf);
-        }else{
-          content=await _fileSystem.readFile(absPath);
-        }
-        const res=await apiCall('file_write',{file_path:f,content,_binary:isBin},{ignoreStop:true});
-        if(res&&res.error){
-          failedFiles.push({file:f,action:'推送',error:res.error});
-        }else{
-          pushed++;
-          addStepMessage('✓ '+f);
-        }
+        await pushFile(f);
+        pushed++;
+        addStepMessage('✓ '+f);
       }catch(e){
-        // 推送过程中读取又失败（极小概率）：清理并跳过，不计入失败
-        addStepMessage('  🧹 推送时读取失败，清理: '+f);
-        try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e2){}
+        // 区分：本地读取失败 → 清理幽灵文件；网络/服务器错误 → 计入失败
+        const isLocalError=/not (be )?found|Could not find|getFileHandle/i.test(e.message);
+        if(isLocalError){
+          addStepMessage('  🧹 清理幽灵文件: '+f);
+          try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e2){}
+        }else{
+          failedFiles.push({file:f,action:'推送',error:e.message});
+        }
       }
     }
   }
   
-  // 5. 删除服务器上的重复路径文件
+  // 5. 删除服务器上的重复路径文件（仅当去重后路径仍存在于服务器时才删旧路径）
   if(serverDeduped.length>0){
     addStepMessage('🧹 清理服务器重复路径...');
-    for(const{raw}of serverDeduped){
+    for(const{raw,fixed}of serverDeduped){
+      if(stopRequested){addStepMessage('⏹ 同步已停止');break;}
+      if(!serverFileSet.has(fixed)){addStepMessage('  ⏭ 跳过(去重路径不存在): '+raw);continue;}
       try{
         await apiCall('file_delete',{file_path:raw},{ignoreStop:true});
         deletedFromServer++;
@@ -1323,16 +1393,19 @@ async function syncServerAndOPFS(){
     }
   }
   
-  // 显示失败的文件和原因
+  // 显示失败的文件和原因（最多显示10个，避免消息刷屏）
   if(failedFiles.length > 0){
-    addStepMessage('⚠️ 失败 '+failedFiles.length+' 个文件:');
-    for(const item of failedFiles){
+    const showCount=Math.min(failedFiles.length,10);
+    addStepMessage('⚠️ 失败 '+failedFiles.length+' 个文件'+(failedFiles.length>10?'（仅显示前10个）':'')+':');
+    for(let i=0;i<showCount;i++){
+      const item=failedFiles[i];
       let reason=item.error;
       if(reason.includes('超出存储配额'))reason='存储空间不足';
       else if(reason.includes('路径不合法'))reason='文件名包含特殊字符';
       else if(reason.includes('未授权'))reason='登录已过期，请重新登录';
       else if(reason.includes('Network')||reason.includes('Failed to fetch'))reason='网络连接失败';
-      else if(reason.includes('not be found')||reason.includes('not found'))reason='本地文件不存在（路径重复已修复，请重新同步）';
+      else if(reason.includes('not be found')||reason.includes('not found'))reason='文件不存在（路径重复已修复，请重新同步）';
+      else if(reason.includes('aborted'))reason='下载超时（60秒）';
       addStepMessage('  • '+item.action+'失败: '+item.file);
       addStepMessage('    原因: '+reason);
     }
@@ -3418,7 +3491,7 @@ document.getElementById('mudBtnLoad').addEventListener('click',function(){
 window.__ui2Debug={get currentUser(){return currentUser;},get accessToken(){return accessToken;},get isRunning(){return isRunning;},get currentSession(){return currentSession;},get mudActive(){return mudActive;},showModal,openFileManager,closeFileManager,runAgentLoop};
 
 // ── 版本号（刷新可见，便于确认是否为最新版本）──
-const APP_VERSION='v1.2.2';
+const APP_VERSION='v1.3.7';
 (function(){
   const el=document.getElementById('welcomeVer');
   if(el)el.textContent=APP_VERSION;
