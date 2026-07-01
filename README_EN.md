@@ -130,7 +130,7 @@ All MiniMax API calls implement automatic triple-key rotation:
 
 ```
 cmdcode-solo/
-├── ui.html                        # Full frontend Agent with memory retrieval (~196KB)
+├── ui.html                        # Full frontend Agent with memory retrieval (~200KB)
 ├── proxy.php                      # API proxy + memory system core (~92KB)
 ├── config.enc.php                 # AES-256-CBC encrypted configuration (DB creds + API keys)
 ├── .htaccess                      # Apache/LiteSpeed security rules
@@ -147,7 +147,7 @@ cmdcode-solo/
 
 | File | Size | Description |
 |:-----|:-----|:------------|
-| **ui.html** | ~196 KB | Frontend chat interface, zero framework dependencies. Built-in AI Agent conversation, file manager, image viewer, audio/video playback, user authentication, model settings panel, multimodal tools (text-to-image/video/music/voice), 3-key rate-limit rotation, session-level quota exhaustion guard |
+| **ui.html** | ~200 KB | Frontend chat interface, zero framework dependencies. Built-in AI Agent conversation, file manager, image viewer, audio/video playback, user authentication, model settings panel, multimodal tools (text-to-image/video/music/voice), 3-key rate-limit rotation, session-level quota exhaustion guard |
 | **proxy.php** | ~92 KB | Multi-provider API proxy, solves browser CORS. Supports MiniMax (triple-key rotation failover) and OpenCode Go, includes dynamic encrypted config loading (config.enc.php), user auth, file system, memory system, remote Bash, share links, web scraping, full video/music async pipeline, MUD game engine. PHP timeout extended to 300s for DeepSeek V4 million-token context |
 | **config.enc.php** | ~2.5 KB | AES-256-CBC encrypted configuration, contains MySQL credentials, ACCESS_TOKEN, API keys (keys never stored in plaintext) |
 | **.htaccess** | ~500 B | Apache/LiteSpeed security rules: blocks direct `.enc.php` and hidden file access, protects `.htaccess` itself |
@@ -188,7 +188,7 @@ CmdCode Solo follows the philosophy of **minimalism, single-page, zero-dependenc
 - 3-key automatic rotation with session-level quota exhaustion protection
 - iOS/Android safe area adaptation
 
-Core app code (HTML + CSS + JS) is about 188KB, suitable for learning native web development or as a lightweight AI application base.
+Core app code (HTML + CSS + JS) is about 200KB, suitable for learning native web development or as a lightweight AI application base.
 
 ---
 
