@@ -417,15 +417,17 @@ async function attemptReauth(){
   if(_reauthing)return _reauthing;
   _reauthing=(async()=>{
     try{
-      const res=await apiCall('session',{},{ignoreStop:true});
+      // 内部调用传 _noReauth 避免再触发 attemptReauth 所导致的自死锁
+      const res=await apiCall('session',{},{ignoreStop:true,_noReauth:true});
       if(res.loggedIn){accessToken=res.token||'';if(accessToken)addAgentMessage('🔄 会话已恢复');return true;}
       if(currentUser&&currentUser.username){
-        const tok=await apiCall('login',{username:currentUser.username,password:''},{ignoreStop:true});
+        const tok=await apiCall('login',{username:currentUser.username,password:''},{ignoreStop:true,_noReauth:true});
         if(tok&&tok.token){accessToken=tok.token;addAgentMessage('🔄 令牌已刷新');return true;}
       }
     }catch(e){}
     // 会话已过期，需要重新登录
     currentUser=null;accessToken='';updateUIForUser(null);
+    try{stopPeriodicMemoryExtraction();}catch(e2){}
     addAgentMessage('⚠️ 登录已过期，请重新登录。');
     return false;
   })();
@@ -438,7 +440,7 @@ function startSessionHealthCheck(){
     if(!currentUser)return;
     try{
       const res=await apiCall('session',{},{ignoreStop:true});
-      if(!res.loggedIn){currentUser=null;accessToken='';updateUIForUser(null);addAgentMessage('⚠️ 会话已过期，请重新登录。');stopSessionHealthCheck();}
+      if(!res.loggedIn){currentUser=null;accessToken='';updateUIForUser(null);addAgentMessage('⚠️ 会话已过期，请重新登录。');stopSessionHealthCheck();try{stopPeriodicMemoryExtraction();}catch(e2){}}
     }catch(e){}
   },300000);
 }
@@ -605,6 +607,8 @@ let ivImageIndex=0;
 let ivAbortController=null;
 
 function hideWelcome(){if(welcome)welcome.style.display='none'}
+// DOM 消息上限：超过 50 条移除最早的，避免长会话/大量 step 消息堆积导致页面卡顿
+function trimChatDOM(){while(chatContainer.children.length>50)chatContainer.removeChild(chatContainer.firstChild);}
 
 function setRunning(running){
   isRunning=running;
@@ -647,9 +651,9 @@ async function apiCall(action,data={},opts={}){
       if(!resp.ok||result.error){
         const errMsg=result.error||'请求失败 (HTTP '+resp.status+')';
         if(resp.status===401||resp.status===403||(result.error&&(result.error.includes('token')||result.error.includes('认证')))){
-          if(attempt===0){
+          if(attempt===0&&!opts._noReauth){
             if(currentUser){await attemptReauth();continue;}
-            else{try{const tok=await apiCall('get_proxy_token',{},{ignoreStop:true});accessToken=tok.token||'';continue;}catch(e2){}}
+            else{try{const tok=await apiCall('get_proxy_token',{},{ignoreStop:true,_noReauth:true});accessToken=tok.token||'';continue;}catch(e2){}}
           }
         }
         throw new Error(errMsg);
@@ -694,7 +698,7 @@ async function loginUser(username){
   startSessionHealthCheck();
   updateUIForUser(username);
   sessionStorage.removeItem('fs_synced');_fileSystem=null;_bashExec=null;_syncWarned=false;
-  addAgentMessage('✅ '+escapeHtml(username)+'已登录，你的 1GB 网盘已就绪，请点击左上角盘符或用户名打开网盘进行管理');
+  addAgentMessage('✅ '+username+'已登录，你的 1GB 网盘已就绪，请点击左上角盘符或用户名打开网盘进行管理');
 }
 
 async function logoutUser(){
@@ -732,19 +736,27 @@ function updateUIForUser(username){
   if(currentUser){sendBtn.textContent='→';sendBtn.classList.remove('guest')}else{sendBtn.textContent='访客';sendBtn.classList.add('guest')}
 }
 
-async function fetchQuota(){
+let _lastQuotaFetchAt=0;const QUOTA_FETCH_INTERVAL=20000; // 20s 节流，避免每条 write 都打 quota 接口
+async function fetchQuota(force){
+  const now=Date.now();
+  if(!force&&now-_lastQuotaFetchAt<QUOTA_FETCH_INTERVAL)return;
+  _lastQuotaFetchAt=now;
+  const el=document.getElementById('quotaInfo');
   try{
     const res=await apiCall('quota',{},{ignoreStop:true});
-    const display = currentUser?.username==='admin' ? 1000 : res.quotaMB;
-    document.getElementById('quotaInfo').textContent=res.usedMB+'MB/'+display+'MB';
-  }catch(e){}
+    if(!res||typeof res.usedMB!=='number'&&typeof res.usedMB!=='string')throw new Error('响应格式异常');
+    const usedMB=res.usedMB;
+    const display=(currentUser&&currentUser.username==='admin')?1000:(typeof res.quotaMB==='number'||/^\d+$/.test(res.quotaMB))?res.quotaMB:'?';
+    el.textContent=usedMB+'MB/'+display+'MB';
+    el.title=''; // 清除失败提示
+  }catch(e){if(el)el.title='配额查询失败；显示可能已过期';}
 }
 
 function addUserMessage(text){
   hideWelcome();
   const div=document.createElement('div');div.className='msg user';
   div.innerHTML='<div class="msg-bubble">'+escapeHtml(text)+'</div>';
-  chatContainer.appendChild(div);scrollToBottom();
+  chatContainer.appendChild(div);trimChatDOM();scrollToBottom();
 }
 function addAgentMessage(text,toolName=null){
   hideWelcome();
@@ -783,9 +795,9 @@ function addAgentMessage(text,toolName=null){
   }
   const div=document.createElement('div');div.className='msg agent';
   let safe=escapeHtml(text);
-  safe=safe.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,function(m0,alt,url){return isSafeUrl(url)?'<img src="'+url+'" alt="'+alt+'" style="max-width:100%;border-radius:8px;margin:6px 0">':m0;});
+  safe=safe.replace(/!\[([^\]]*)\]\((([^()]+|\([^()]*\))*)\)/g,function(m0,alt,url){return isSafeUrl(url)?'<img src="'+url+'" alt="'+alt+'" style="max-width:100%;border-radius:8px;margin:6px 0">':m0;});
   safe=safe.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
-  safe=safe.replace(/\[([^\]]+)\]\(([^)]+)\)/g,function(m0,text,url){return isSafeUrl(url)?'<a href="'+url+'" target="_blank" rel="noopener">'+text+'</a>':m0;});
+  safe=safe.replace(/\[([^\]]+)\]\((([^()]+|\([^()]*\))*)\)/g,function(m0,text,url){return isSafeUrl(url)?'<a href="'+url+'" target="_blank" rel="noopener">'+text+'</a>':m0;});
   safe=safe.replace(/\n/g,'<br>');
   let html='<div class="msg-bubble">'+safe;
   if(toolName)html+=' <span class="msg-tool">🔧 '+toolName+'</span>';
@@ -798,15 +810,22 @@ function addStepMessage(step,force){
   if(!force&&mudActive&&!showMudThinking)return;
   const div=document.createElement('div');div.className='msg step';
   div.innerHTML='<div class="msg-step">🔄 '+escapeHtml(step)+'</div>';
-  chatContainer.appendChild(div);scrollToBottom();
+  chatContainer.appendChild(div);trimChatDOM();scrollToBottom();
 }
 function addImageMessage(url){
+  if(typeof url!=='string'||!url)return;
+  // URL 安全检查：拒绝 javascript:/vbscript: 等危险协议（与 addAgentMessage 一致）
+  if(!isSafeUrl(url))return;
   const div=document.createElement('div');div.className='msg agent';
   const bubble=document.createElement('div');bubble.className='msg-bubble';
   const img=document.createElement('img');img.src=url;img.alt='';
   img.style.cssText='max-width:100%;border-radius:8px;margin:6px 0;display:block';img.loading='lazy';
+  // 加载失败降级：替换为提示文本，避免显示破碎图标
+  img.onerror=function(){
+    if(img.parentNode){const f=document.createElement('div');f.textContent='[图片加载失败]';f.style.cssText='padding:8px 12px;color:var(--text-secondary);font-size:12px;font-style:italic;';img.replaceWith(f);}
+  };
   bubble.appendChild(img);div.appendChild(bubble);
-  chatContainer.appendChild(div);scrollToBottom();
+  chatContainer.appendChild(div);trimChatDOM();scrollToBottom();
 }
 function scrollToBottom(){chatContainer.scrollTop=chatContainer.scrollHeight;}
 function escapeHtml(text){
@@ -861,6 +880,9 @@ async function fetchMemoryContext(userInput){
 // 触发记忆提取（提取后自动标记已处理，避免重复提取）
 async function triggerMemoryExtraction(messages){
   if(!accessToken||!messages||messages.length<2)return;
+  // 全局并发 guard：定时器、登出、loop 结束三处都会调用，避免重复提取导致服务端写入重复记忆
+  if(memoryExtractionPending)return;
+  memoryExtractionPending=true;
   try{
     await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({_action:'memory',sub_action:'enqueue_extract',
@@ -868,7 +890,7 @@ async function triggerMemoryExtraction(messages){
         scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
         _token:accessToken})});
     markMessagesExtracted(); // 标记已提取
-  }catch(e){}
+  }catch(e){}finally{memoryExtractionPending=false;}
 }
 
 // ── Thinking Mode ──
@@ -890,15 +912,15 @@ const EDIT_PRIORITY_PROMPT='\n## File Modification Strategy\n- **Prefer \'edit\'
 const ALL_TOOLS=[
   {type:'function',function:{name:'web_search',description:'搜索互联网，返回结构化结果列表。',parameters:{type:'object',properties:{query:{type:'string',description:'搜索关键词'}},required:['query']}}},
   {type:'function',function:{name:'vision_recognition',description:'识别图片内容，回答关于图片的问题。',parameters:{type:'object',properties:{image_url:{type:'string',description:'图片URL'},question:{type:'string',description:'要询问的问题'}},required:['image_url']}}},
-  {type:'function',function:{name:'image_generation',description:'根据文字描述生成图片，返回图片URL列表。支持自定义分辨率、种子、参考图等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3'],default:'1:1'},n:{type:'integer',description:'生成数量1-4',default:1},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
+  {type:'function',function:{name:'image_generation',description:'根据文字描述生成图片，返回图片URL列表。支持自定义分辨率、种子、参考图等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3','3:4','3:2','2:3'],default:'1:1'},n:{type:'integer',description:'生成数量1-9',default:1,minimum:1,maximum:9},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
   {type:'function',function:{name:'video_generation',description:'根据描述生成视频。T2V文生视频(Hailuo-2.3)、I2V图生视频(Hailuo-2.3)、SEF首尾帧插帧(Hailuo-02)、S2V主体参考(S2V-01)。参考 mmx-cli 参数模型。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述'},first_frame_image:{type:'string',description:'首帧图片URL（图生视频I2V模式）'},last_frame_image:{type:'string',description:'尾帧图片URL（与first_frame_image配合→Hailuo-02 SEF插帧）'},subject_image:{type:'string',description:'主体参考图URL（角色一致性→S2V-01模型）'}},required:['prompt']}}},
   {type:'function',function:{name:'music_generation',description:'生成音乐或歌曲，返回音频URL。支持精细控制：曲风、情绪、乐器、速度、调性等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（如：轻快爵士风格，夏天的海边）'},lyrics:{type:'string',description:'歌词（可选，不填则纯音乐）'},instrumental:{type:'boolean',description:'纯音乐（无歌词，与lyrics互斥）',default:false},lyrics_optimizer:{type:'boolean',description:'自动生成歌词（与lyrics/instrumental互斥）',default:false},genre:{type:'string',description:'曲风（如：folk, pop, jazz, rock, classical, electronic, rnb, hiphop）'},mood:{type:'string',description:'情绪/氛围（如：warm, melancholic, uplifting, dark, dreamy）'},vocals:{type:'string',description:'人声风格（如：warm male baritone, bright female soprano）'},instruments:{type:'string',description:'主要乐器（如：acoustic guitar, piano, strings）'},tempo:{type:'string',description:'速度描述（如：fast, slow, moderate）'},bpm:{type:'integer',description:'精确BPM数值（如95, 120）'},key:{type:'string',description:'调性（如：C major, A minor）'}},required:['prompt']}}},
   {type:'function',function:{name:'text_to_speech',description:'将文本转为语音，返回音频URL。可选音色：female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), male-qn-qingse(青年男声), female-tianmei(甜美)等。',parameters:{type:'object',properties:{text:{type:'string',description:'要读出的文本'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',minimum:0.5,maximum:2.0,default:1.0},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
-  {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。仅支持以下51个命令，不支持任何其他命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等。禁止在根目录创建文件，必须使用 files/ images/ project/ 等子目录。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令（仅限上述51个）'}},required:['command']}}},
+  {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。仅支持以下50个命令，不支持任何其他命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等。禁止在根目录创建文件，必须使用 files/ images/ project/ 等子目录。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令（仅限上述50个）'}},required:['command']}}},
   {type:'function',function:{name:'read',description:'读取文件内容。登录用户访问个人文件夹，访客访问 guest/ 文件夹。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},offset:{type:'integer',description:'起始行号'},limit:{type:'integer',description:'读取行数'}},required:['file_path']}}},
   {type:'function',function:{name:'write',description:'创建或覆盖文件。必须根据内容类型选择路径：图片→images/，音乐/音频→music/，语音→voice/，代码/项目→project/，文档→files/，临时→tmp/，游戏数据→mud/，记忆→memory/。禁止在根目录创建文件。大文件修改优先用 edit 工具。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径。如 images/logo.png、project/calc.py'},content:{type:'string',description:'要写入的内容'}},required:['file_path','content']}}},
   {type:'function',function:{name:'edit',description:'编辑文件的指定部分。登录用户编辑个人文件夹文件，访客编辑 guest/ 文件夹文件。对于修改大文件中的特定段落，此工具比 write 更高效。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},old_string:{type:'string',description:'要替换的原始文本'},new_string:{type:'string',description:'替换后的新文本'},replace_all:{type:'boolean',description:'是否替换所有匹配项',default:false}},required:['file_path','old_string','new_string']}}},
-  {type:'function',function:{name:'AskUserQuestion',description:'当需要用户提供更多信息或做出选择时，向用户提问。',parameters:{type:'object',properties:{question:{type:'string',description:'要询问用户的问题'},options:{type:'array',items:{type:'string'},description:'可选的选择项（最多4个）'}},required:['question']}}},
+  {type:'function',function:{name:'AskUserQuestion',description:'当需要用户提供更多信息或做出选择时，向用户提问。',parameters:{type:'object',properties:{question:{type:'string',description:'要询问用户的问题'},options:{type:'array',items:{type:'string'},description:'可选的选择项（最多8个）',maxItems:8}},required:['question']}}},
   {type:'function',function:{name:'web_fetch',description:'抓取外部网页内容，返回文本内容。适用于阅读在线文档、API文档等。',parameters:{type:'object',properties:{url:{type:'string',description:'目标网页URL'},max_chars:{type:'integer',description:'最大抓取字符数',default:50000}},required:['url']}}},
   {type:'function',function:{name:'mud_action',description:'MUD游戏引擎命令。执行游戏操作：status(查看状态)、action(执行动作)、save(存档)、load(读档)、image_on/image_off(开关配图)、voice_on/voice_off(开关语音)、vision_on/vision_off(开关识图)、state_updates(同步状态更新)。',parameters:{type:'object',properties:{command:{type:'string',enum:['status','action','save','load','image_on','image_off','voice_on','voice_off','vision_on','vision_off','state_updates'],description:'MUD命令'},message:{type:'string',description:'自然语言输入（action命令必填）'},state_updates:{type:'object',description:'状态更新JSON（state_updates命令必填）'}},required:['command']}}}
 ];
@@ -953,8 +975,14 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
               if(choice.finish_reason)finishReason=choice.finish_reason;
               if(delta.tool_calls){
                 for(const tc of delta.tool_calls){
-                  const idx=tc.index??toolCalls.length;
-                  if(!toolCalls[idx])toolCalls[idx]={id:tc.id||'',type:'function',function:{name:'',arguments:''}};
+                  // 用 ?? 兜底 index；若 delta 乱序到达导致中间空洞，按当前长度追加占位
+                  let idx=tc.index;
+                  if(idx===undefined||idx===null)idx=toolCalls.length;
+                  if(!toolCalls[idx]){
+                    // 填补可能存在的中间空洞（holes），避免 JSON 序列化丢失后续元素
+                    for(let fill=toolCalls.length;fill<idx;fill++)toolCalls[fill]={id:'',type:'function',function:{name:'',arguments:''}};
+                    toolCalls[idx]={id:tc.id||'',type:'function',function:{name:'',arguments:''}};
+                  }
                   if(tc.id)toolCalls[idx].id=tc.id;
                   if(tc.function?.name)toolCalls[idx].function.name=tc.function.name;
                   if(tc.function?.arguments)toolCalls[idx].function.arguments+=tc.function.arguments;
@@ -968,11 +996,14 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
         if(readerError.name!=='AbortError')throw readerError;
       }
       // 组装完整响应
-      const result={choices:[{message:{role,content,tool_calls:toolCalls.length?toolCalls:undefined},finish_reason:finishReason}]};
+      // 过滤未填充的 placeholder holes（id 为空或 function.name 为空），避免下轮请求被后端 400 拒绝
+      const cleanToolCalls=toolCalls.filter(tc=>tc&&tc.id&&tc.function&&tc.function.name);
+      const result={choices:[{message:{role,content,tool_calls:cleanToolCalls.length?cleanToolCalls:undefined},finish_reason:finishReason}]};
       if(reasoning)result.choices[0].message.reasoning_content=reasoning;
       return result;
     }
-    return resp.json();
+    // 非 JSON 响应兜底：避免 SyntaxError 暴露给用户
+    try{return await resp.json();}catch(e){const raw=await resp.text().catch(()=>'');throw new Error('代理响应解析失败 (HTTP '+resp.status+'): '+(raw||e.message).slice(0,200));}
   }catch(e){done=true;clearTimeout(timer);throw e;}
 }
 
@@ -989,12 +1020,15 @@ class VirtualFS{
     if(!path||path==='.')return this.cwd;
     if(path==='/')return'/sandbox';
     let raw;
-    if(path.startsWith('/')){raw=path.startsWith('/sandbox')?path:'/sandbox'+path;}
-    else{raw=this.cwd+'/'+path;}
+    if(path.startsWith('/')){
+      // 绝对路径仅在确属 /sandbox（精确组件匹配）时直接用；其余均钳制到 /sandbox 下，避免 /sandboxfoo 逃逸
+      if(path==='/sandbox'||path.startsWith('/sandbox/'))raw=path;
+      else raw='/sandbox'+path;
+    }else{raw=this.cwd+'/'+path;}
     const parts=raw.split('/');const result=[];
     for(const p of parts){if(p==='..'){if(result.length>0)result.pop();}else if(p&&p!=='.')result.push(p);}
     const resolved='/'+result.join('/');
-    return resolved.startsWith('/sandbox')?resolved:this.cwd;
+    return(resolved==='/sandbox'||resolved.startsWith('/sandbox/'))?resolved:this.cwd;
   }
   async getDirHandle(path,create=false){
     const parts=path.split('/').filter(Boolean);let cur=this.root;
@@ -1009,7 +1043,7 @@ class VirtualFS{
   // 带同步钩子的文件操作
   _assertSandbox(path){
     // 只检查路径是否在 /sandbox 内，不限制子目录
-    if(!path.startsWith('/sandbox'))throw new Error('安全限制：操作仅允许在沙箱目录内。');
+    if(!(path==='/sandbox'||path.startsWith('/sandbox/')))throw new Error('安全限制：操作仅允许在沙箱目录内。');
   }
   async readFile(path){
     const fh=await this.getFileHandle(path);return await(await fh.getFile()).text();
@@ -1030,14 +1064,21 @@ class VirtualFS{
     for(const p of parts)cur=await cur.getDirectoryHandle(p,{create:true});
   }
   async deleteEntry(path,{recursive=false}={}){
+    this._assertSandbox(path);
     const unlock=await this._lockFile(path);
     try{
       const dh=await this.getDirHandle(path.slice(0,path.lastIndexOf('/'))||'/');
       await dh.removeEntry(path.split('/').pop(),{recursive});this._notifyDelete(path);
     }finally{unlock();}
   }
-_notifyWrite(path){if(this.syncManager&&!_syncing)this.syncManager.pushFile(path).catch(()=>{_syncQueue.push({type:'write',abs:path});if(!_syncWarned){_syncWarned=true;addStepMessage('⚠️ 文件已保存到本地，但同步到云端失败。网络恢复后会自动重试。');}});}
-_notifyDelete(path){if(this.syncManager&&!_syncing)this.syncManager.deleteServerFile(path).catch(()=>{_syncQueue.push({type:'delete',abs:path});if(!_syncWarned){_syncWarned=true;addStepMessage('⚠️ 文件已从本地删除，但同步到云端失败。');}});}
+_notifyWrite(path){if(this.syncManager&&!_syncing)this.syncManager.pushFile(path).catch(()=>{_dedupSyncQueue(path,'write');_syncQueue.push({type:'write',abs:path});if(!_syncWarned){_syncWarned=true;addStepMessage('⚠️ 文件已保存到本地，但同步到云端失败。网络恢复后会自动重试。');}});}
+_notifyDelete(path){if(this.syncManager&&!_syncing)this.syncManager.deleteServerFile(path).catch(()=>{_dedupSyncQueue(path,'delete');_syncQueue.push({type:'delete',abs:path});if(!_syncWarned){_syncWarned=true;addStepMessage('⚠️ 文件已从本地删除，但同步到云端失败。');}});}
+}
+// 同步队列去重：同一路径的旧条目先移除，避免快速连续编辑堆积冗余条目
+function _dedupSyncQueue(abs,type){
+  for(let i=_syncQueue.length-1;i>=0;i--){
+    if(_syncQueue[i].abs===abs&&_syncQueue[i].type===type)_syncQueue.splice(i,1);
+  }
 }
 class FileSyncManager{
   constructor(fs){this.fs=fs;}
@@ -1080,10 +1121,12 @@ class FileSyncManager{
     try{
       await apiCall('file_delete',{file_path:rel},{ignoreStop:true});
       await this._retryQueue();
+      if(currentUser)fetchQuota(); // 删除后异步刷新配额
     }catch(e){console.warn('[Sync] deleteServerFile failed:',rel,e.message);throw e;}
   }
   async _retryQueue(){
     if(!_syncQueue.length)return;
+    const MAX_SYNC_ATTEMPTS=5;
     const batch=[..._syncQueue];_syncQueue=[];
     for(const item of batch){
       try{
@@ -1095,7 +1138,11 @@ class FileSyncManager{
           const rel=dedupPath(item.abs.startsWith('/sandbox/')?item.abs.slice(9):'');
 await apiCall('file_delete',{file_path:rel},{ignoreStop:true});
         }
-      }catch(e){_syncQueue.push(item);}
+      }catch(e){
+        item.attempts=(item.attempts||0)+1;
+        if(item.attempts<MAX_SYNC_ATTEMPTS){_syncQueue.push(item);}
+        else if(!_syncWarnedAboutDrop){_syncWarnedAboutDrop=true;addStepMessage('⚠️ 部分文件同步失败已达上限，已放弃: '+item.abs);}
+      }
     }
   }
 }
@@ -1416,6 +1463,20 @@ async function syncServerAndOPFS(){
  }
 class BashExecutor{
   constructor(vfs){this.vfs=vfs;}
+  // 在引号外按字符 ch 切分（支持 "..." / '...' 转义），返回切分后的段
+  _splitTopLevel(cmd,ch){
+    const parts=[];let cur='';let depth=0;
+    for(let i=0;i<cmd.length;i++){
+      const c=cmd[i];
+      if(c==='"'||c==="'"){if(depth===0){depth=c;}else if(depth===c){depth=0;}cur+=c;continue;}
+      if(c===ch&&depth===0){parts.push(cur);cur='';continue;}
+      cur+=c;
+    }
+    parts.push(cur);
+    return parts.map(s=>s.trim()).filter(s=>s.length>0);
+  }
+  _splitPipes(cmd){return this._splitTopLevel(cmd,'|');}
+  _splitSemicolons(cmd){return this._splitTopLevel(cmd,';');}
   parseCommand(cmd){
     const args=[];const re=/"([^"]*)"|'([^']*)'|(\S+)/g;let m;
     while((m=re.exec(cmd))!==null){
@@ -1429,8 +1490,46 @@ class BashExecutor{
     return args;
   }
   async exec(cmd){
+    // 拆分分号链（引号感知）：ls; cat a; rm x 依次执行
+    const semiParts=this._splitSemicolons(cmd);
+    if(semiParts.length>1){
+      const outs=[];
+      for(const part of semiParts){if(stopRequested)break;outs.push(await this.exec(part));}
+      return outs.filter(Boolean).join('\n');
+    }
+    // 管道支持（引号感知）：把左段输出作为右段第一个参数的 _stdin 注入（xargs / grep 等场景）
+    const pipeParts=this._splitPipes(cmd);
+    if(pipeParts.length>1){
+      let out='';
+      for(let i=0;i<pipeParts.length;i++){if(stopRequested)break;
+        const seg=pipeParts[i];
+        if(i===0){out=await this.exec(seg);continue;}
+        // 把左段输出注入右段命令的 args（作为 _stdin）
+        const rightArgs=this.parseCommand(seg);
+        rightArgs._stdin=out;
+        out=await this._dispatch(rightArgs,seg);
+      }
+      return out;
+    }
     const args=this.parseCommand(cmd);if(!args.length)return'';
+    return this._dispatch(args,cmd);
+  }
+  async _dispatch(args,cmd){
+    // 展开合并短选项：-cd → -c -d（仅对已知短选项命令生效，避免误拆长选项 --help 等）
+    const SHORT_OPT_CMDS=new Set(['tr','uniq','nl','tee','sed','sort','cut','head','tail','wc','grep','paste','comm','join','split']);
+    if(SHORT_OPT_CMDS.has((args[0]||'').toLowerCase())){
+      for(let i=1;i<args.length;i++){
+        const a=args[i];
+        if(/^-[a-z]{2,}$/.test(a)){
+          const single=a.slice(1).split('').map(ch=>'-'+ch);
+          args.splice(i,1,...single);
+          i+=single.length-1;
+        }
+      }
+    }
     const c=args[0].toLowerCase();const p=args.slice(1);
+    // slice() 不复制自定义属性，需显式把管道 stdin 传给 p（供 grep/nl/tee/xargs 等消费）
+    if(args._stdin!=null)p._stdin=args._stdin;
     try{
       switch(c){
         case'ls':return await this._ls(p);
@@ -1463,7 +1562,7 @@ class BashExecutor{
         case'seq':return this._seq(p);
         case'rev':return await this._rev(p);
         case'stat':return await this._stat(p);
-        case'sed':return await this._sed(p,cmd);
+        case'sed':return await this._sed(p,cmd,args.includes('-i'));
         case'tee':return await this._tee(p,cmd);
         case'file':return await this._file(p);
         case'realpath':return this._realpath(p);
@@ -1499,12 +1598,21 @@ class BashExecutor{
   }
   async _cat(p){
     if(!p.length)throw new Error('cat: 缺少文件参数');
-    return await this.vfs.readFile(this.vfs.resolvePath(p[0]));
+    // 支持多文件串联输出
+    const parts=[];
+    for(let i=0;i<p.length;i++){
+      const each=p[i];
+      try{parts.push(await this.vfs.readFile(this.vfs.resolvePath(each)));}
+      catch(e){if(e.name==='AbortError')throw e;parts.push('cat: '+each+': '+e.message);}
+    }
+    return parts.join('\n');
   }
   async _echo(p,raw){
-    const m=raw.match(/echo\s+(.*?)\s*(>>?)\s*(.+)/);
+    // 优先匹配引号包裹的文本，避免引号内的 > 被误当作重定向符
+    const m=raw.match(/echo\s+("(?:[^"\\]|\\.)*"|'[^']*'|.+?)\s*(>>?)\s+(.+)/);
     if(m){
-      const text=m[1].replace(/^["']|["']$/g,'');const append=m[2]==='>>';const fp=this.vfs.resolvePath(m[3].trim());
+      let text=m[1];const append=m[2]==='>>';const fp=this.vfs.resolvePath(m[3].trim());
+      if((text.startsWith('"')&&text.endsWith('"'))||(text.startsWith("'")&&text.endsWith("'")))text=text.slice(1,-1);
       await this.vfs.writeFile(fp,text+'\n',append);return'';
     }
     return p.join(' ');
@@ -1540,16 +1648,19 @@ class BashExecutor{
   async _cp(p){
     if(p.length<2)throw new Error('cp: 缺少源或目标');
     const src=this.vfs.resolvePath(p[0]);const dst=this.vfs.resolvePath(p[1]);
-    await this.vfs.writeFile(dst,await this.vfs.readFile(src));return'';
+    try{await this.vfs.writeFile(dst,await this.vfs.readFile(src));}catch(e){if(e.name==='AbortError')throw e;if(e.name==='NotFoundError'||e.code===8)throw new Error('cp: 源文件不存在: '+p[0]);throw new Error('cp: '+e.message);}
+    return'';
   }
   async _mv(p){
     if(p.length<2)throw new Error('mv: 缺少源或目标');
     const src=this.vfs.resolvePath(p[0]);
-    await this._cp(p);await this.vfs.deleteEntry(src);return'';
+    try{await this._cp(p);await this.vfs.deleteEntry(src);}catch(e){if(e.name==='AbortError')throw e;throw new Error('mv: '+e.message);}
+    return'';
   }
   async _head(p){
     const n=p.findIndex(a=>a==='-n');
-    const lines=n>=0?parseInt(p[n+1])||10:10;
+    let lines=10;
+    if(n>=0&&p[n+1]!==undefined&&p[n+1]!==''){const v=parseInt(p[n+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
     const file=p.find(a=>!a.startsWith('-')&&(n<0||a!==p[n+1]));
     if(!file)throw new Error('head: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
@@ -1557,12 +1668,13 @@ class BashExecutor{
   }
   async _tail(p){
     const n=p.findIndex(a=>a==='-n');
-    const lines=n>=0?parseInt(p[n+1])||10:10;
+    let lines=10;
+    if(n>=0&&p[n+1]!==undefined&&p[n+1]!==''){const v=parseInt(p[n+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
     const file=p.find(a=>!a.startsWith('-')&&(n<0||a!==p[n+1]));
     if(!file)throw new Error('tail: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     const all=content.split('\n');
-    return all.slice(-lines).join('\n');
+    return lines===0?'':all.slice(-lines).join('\n');
   }
   async _wc(p){
     const files=p.filter(a=>!a.startsWith('-'));
@@ -1573,8 +1685,9 @@ class BashExecutor{
     const results=[];
     for(const f of files){
       const content=await this.vfs.readFile(this.vfs.resolvePath(f));
-      const lines=content.split('\n').length;
-      const words=content.split(/\s+/).filter(Boolean).length;
+      // 计可视行数：abc=1, abc\n=1, abc\ndef=2, abc\ndef\n=2, ""=0（split 一律偏多 1，故按 \n 数 + 末尾未换行补 1）
+      const lines=(content.match(/\n/g)||[]).length+(content.length>0&&!content.endsWith('\n')?1:0);
+      const words=content.length===0?0:content.split(/\s+/).filter(Boolean).length;
       const chars=content.length;
       const parts=[];
       if(showAll||showLines)parts.push(lines);
@@ -1587,23 +1700,38 @@ class BashExecutor{
   }
   async _sort(p){
     const reverse=p.includes('-r');
+    const numeric=p.includes('-n');
     const file=p.find(a=>!a.startsWith('-'));
     if(!file)throw new Error('sort: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     let lines=content.split('\n').filter(Boolean);
-    lines.sort();
+    if(numeric){
+      lines.sort((a,b)=>{const na=parseFloat(a),nb=parseFloat(b);
+        if(Number.isFinite(na)&&Number.isFinite(nb))return na-nb;
+        return String(a).localeCompare(String(b));});
+    }else{lines.sort((a,b)=>a.localeCompare(b));}
     if(reverse)lines.reverse();
     return lines.join('\n');
   }
   async _uniq(p){
-    const file=p.find(a=>!a.startsWith('-'));
+    const countMode=p.includes('-c');
+    const onlyDups=p.includes('-d');
+    const onlyUniq=p.includes('-u');
+    const file=p.find(a=>!a.startsWith('-')&&!['-c','-d','-u'].includes(a));
     if(!file)throw new Error('uniq: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     const lines=content.split('\n');
+    // 先统计每个连续相同块的次数
+    const groups=[];
+    for(let i=0;i<lines.length;i++){
+      if(i>0&&lines[i]===lines[i-1])groups[groups.length-1].count++;
+      else groups.push({line:lines[i],count:1});
+    }
     const result=[];
-    let prev='';
-    for(const line of lines){
-      if(line!==prev){result.push(line);prev=line;}
+    for(const g of groups){
+      if(onlyDups&&g.count<2)continue;
+      if(onlyUniq&&g.count>=2)continue;
+      result.push(countMode?g.count+' '+g.line:g.line);
     }
     return result.join('\n');
   }
@@ -1611,25 +1739,33 @@ class BashExecutor{
     const ignoreCase=p.includes('-i');
     const showLineNum=p.includes('-n');
     const invert=p.includes('-v');
+    const countMode=p.includes('-c');
     const args=p.filter(a=>!a.startsWith('-'));
     if(args.length<1)throw new Error('grep: 缺少搜索模式');
     const pattern=args[0];
     const files=args.slice(1);
-    if(!files.length)throw new Error('grep: 缺少文件参数');
+    // 支持管道：无文件参数时用 _stdin 作为输入
+    const srcs=[];
+    if(!files.length){
+      if(!p._stdin)throw new Error('grep: 缺少文件参数');
+      srcs.push(['(stdin)',p._stdin]);
+    }else{
+      for(const f of files)srcs.push([f,null]);
+    }
     const flags=ignoreCase?'gi':'g';
     let re;
     try{re=new RegExp(pattern,flags);}catch(e){re=new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),flags);}
-    const results=[];
-    for(const f of files){
-      const content=await this.vfs.readFile(this.vfs.resolvePath(f));
-      const lines=content.split('\n');
+    const counts=[];const results=[];
+    for(const [f,preset]of srcs){
+      const content=preset!==null?preset:await this.vfs.readFile(this.vfs.resolvePath(f));
+      const lines=content.split('\n');let cnt=0;
       lines.forEach((line,i)=>{
         const match=re.test(line);re.lastIndex=0;
-        if(match?!invert:invert)return;
-        const prefix=showLineNum?(i+1)+':':'';
-        results.push(files.length>1?f+':'+prefix+line:prefix+line);
+        if(match?!invert:invert){cnt++;if(!countMode){const prefix=showLineNum?(i+1)+':':'';results.push(srcs.length>1?f+':'+prefix+line:prefix+line);}}
       });
+      if(countMode)counts.push(srcs.length>1?f+':'+cnt:String(cnt));
     }
+    if(countMode)return counts.join('\n')||'0';
     return results.join('\n')||'(无匹配)';
   }
   async _du(p){
@@ -1651,7 +1787,7 @@ class BashExecutor{
     const target=p.find(a=>!a.startsWith('-'))||'.';
     const abs=this.vfs.resolvePath(target);
     const lines=[];
-    const scan=async(dirHandle,prefix,isLast)=>{
+    const scan=async(dirHandle,prefix,isLast,depth=0)=>{
       const entries=[];
       for await(const[name,handle]of dirHandle.entries())entries.push({name,handle});
       entries.sort((a,b)=>a.name.localeCompare(b.name));
@@ -1661,9 +1797,9 @@ class BashExecutor{
         const connector=isLastItem?'└── ':'├── ';
         const suffix=e.handle.kind==='directory'?'/':'';
         lines.push(prefix+connector+e.name+suffix);
-        if(e.handle.kind==='directory'){
+        if(e.handle.kind==='directory'&&depth<20){
           const newPrefix=prefix+(isLastItem?'    ':'│   ');
-          await scan(e.handle,newPrefix,false);
+          await scan(e.handle,newPrefix,false,depth+1);
         }
       }
     };
@@ -1707,54 +1843,127 @@ class BashExecutor{
   async _find(p){
     const nameIdx=p.indexOf('-name');
     const pattern=nameIdx>=0?p[nameIdx+1]:'*';
-    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1]))||'.';
+    const typeIdx=p.indexOf('-type');
+    const typeFilter=typeIdx>=0?p[typeIdx+1]:null;
+    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1])&&(typeIdx<0||a!==p[typeIdx+1]))||'.';
     const abs=this.vfs.resolvePath(startDir);
     const regex=new RegExp('^'+pattern.replace(/\*/g,'\x00').replace(/\?/g,'\x01').replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\x00/g,'.*').replace(/\x01/g,'.')+'$');
     const results=[];
-    const scan=async(dirHandle,prefix)=>{
+    const MAX_DEPTH=20;
+    const scan=async(dirHandle,prefix,depth)=>{
+      if(depth>=MAX_DEPTH)return;
       for await(const[name,handle]of dirHandle.entries()){
         const path=prefix?prefix+'/'+name:name;
-        if(regex.test(name))results.push(path);
-        if(handle.kind==='directory')await scan(handle,path);
+        const isDir=handle.kind==='directory';
+        const typeMatch=!typeFilter||(typeFilter==='f'&&!isDir)||(typeFilter==='d'&&isDir);
+        if(regex.test(name)&&typeMatch)results.push(path);
+        if(isDir)await scan(handle,path,depth+1);
       }
     };
     const dh=await this.vfs.getDirHandle(abs);
-    await scan(dh,startDir==='.'?'.':startDir);
+    await scan(dh,startDir==='.'?'.':startDir,0);
     return results.join('\n')||'(无匹配)';
   }
   async _cut(p,raw){
     const delimMatch=raw.match(/-d\s*['"]?(.)['"]?/);
     const delim=delimMatch?delimMatch[1]:'\t';
-    const fieldMatch=raw.match(/-f\s*(\d+)/);
-    const field=fieldMatch?parseInt(fieldMatch[1]):1;
-    const file=p.find(a=>!a.startsWith('-')&&a!==delim&&a!==String(field));
+    // 明确检测 -f 缺参：raw 里有 -f 但正则不匹配（如 `cut -f file` 不带字段列表）
+    const hasF=raw.includes('-f');
+    const fieldMatch=raw.match(/-f\s*([\d,\-]+)/);
+    if(hasF&&!fieldMatch)throw new Error('cut: -f 必须指定字段列表，如 -f1 或 -f1,3 或 -f1-5');
+    // 解析字段列表：支持 1,3 与 1-3 与 1,3-5 混合
+    const fieldSet=new Set();
+    if(fieldMatch){
+      for(const tok of fieldMatch[1].split(',')){
+        if(tok.includes('-')){
+          const [a,b]=tok.split('-').map(Number);
+          if(a&&b)for(let i=a;i<=b;i++)fieldSet.add(i);
+          else if(a)fieldSet.add(a);
+        }else{const n=Number(tok);if(n)fieldSet.add(n);}
+      }
+    }else{fieldSet.add(1);}
+    const fields=[...fieldSet].sort((a,b)=>a-b);
+    // 文件：第一个不被 -d/-f 选项解释消耗的非 flag token
+    const consumed=new Set([delim,fieldMatch?fieldMatch[1]:null].filter(Boolean));
+    const file=p.find(a=>!a.startsWith('-')&&!consumed.has(a));
     if(!file)throw new Error('cut: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     return content.split('\n').map(line=>{
       const cols=line.split(delim);
-      return cols[field-1]||'';
+      return fields.map(f=>cols[f-1]||'').join(delim);
     }).join('\n');
   }
+  // 展开 a-z / A-Z / 0-9 类范围
+  _expandSet(s){
+    if(!s)return [];
+    const out=[];
+    for(let i=0;i<s.length;i++){
+      if(i+2<s.length&&s[i+1]==='-'){
+        const start=s.charCodeAt(i),end=s.charCodeAt(i+2);
+        if(start<=end){for(let c=start;c<=end;c++)out.push(String.fromCharCode(c));}
+        i+=2;
+      }else{out.push(s[i]);}
+    }
+    return out;
+  }
   async _tr(p,raw){
-    const sets=raw.match(/tr\s+['"]?([^'"]+)['"]?\s+['"]?([^'"]+)['"]?/);
-    if(!sets)throw new Error('tr: 用法 tr SET1 SET2');
-    const [,set1,set2]=sets;
-    const content=p.find(a=>!a.startsWith('-'));
-    if(!content)throw new Error('tr: 缺少输入');
+    // 解析 flags：-c(补集) -d(删除) -s(挤压) ，SET 来自两个非 flag 参数
+    const complement=raw.includes(' -c')||raw.includes(' -C');
+    const delMode=raw.includes(' -d')||raw.includes(' -D');
+    const squeeze=raw.includes(' -s')||raw.includes(' -S');
+    const setArgs=p;
+    if(delMode&&setArgs.length<1)throw new Error('tr -d: 用法 tr -d SET file');
+    // 仅挤压模式（tr -s SET1）只需一个 SET
+    if(!delMode&&(setArgs.length<2)&&!squeeze)throw new Error('tr: 用法 tr SET1 SET2 file');
+    if(squeeze&&setArgs.length<1)throw new Error('tr: 缺少 SET1');
+    const fileArgs=setArgs.slice(delMode?1:(squeeze&&setArgs.length<2?1:2));
     let text;
-    try{text=await this.vfs.readFile(this.vfs.resolvePath(content));}catch(e){text=content;}
-    let result='';
+    if(fileArgs.length){
+      const fp=fileArgs[fileArgs.length-1];
+      try{text=await this.vfs.readFile(this.vfs.resolvePath(fp));}
+      catch(e){if(e.name==='AbortError')throw e;throw new Error('tr: '+fp+': '+e.message);}
+    }else if(p._stdin!=null){
+      text=p._stdin;
+    }else{
+      throw new Error('tr: 缺少输入');
+    }
+    let set1Chars=this._expandSet(setArgs[0]);
+    const set1Set=new Set(set1Chars);
+    let compSet=null;
+    if(complement){
+      // 用 Set 而非 65536 元素数组；后续按 membership 判断
+      compSet=set1Set;
+    }
+    const inSet1=(ch)=>complement?(!compSet.has(ch)):set1Set.has(ch);
+    const set2Chars=this._expandSet(setArgs[1]||'');
+    const padChar=set2Chars.length?set2Chars[set2Chars.length-1]:'';
+    const s2arr=(ch)=>{const i=set1Chars.indexOf(ch);return i>=0?(set2Chars[i]||padChar):null;};
+    let result='',lastEmitted='';
+    const squeezeSet=squeeze?new Set(delMode?set1Chars:this._expandSet(setArgs[0])):null;
     for(const ch of text){
-      const idx=set1.indexOf(ch);
-      result+=idx>=0?(set2[idx]||''):ch;
+      if(delMode){if(inSet1(ch))continue;}
+      let outCh;
+      if(!delMode&&(set2Chars.length||!squeeze)){
+        const replaced=s2arr(ch);
+        outCh=replaced===null?ch:replaced;
+      }else{
+        // 仅挤压模式（无 SET2）：保留 SET1 字符，不翻译
+        outCh=ch;
+      }
+      // 挤压：仅在 SET1 字符重复时跳过
+      if(squeeze&&squeezeSet.has(ch)&&outCh===lastEmitted)continue;
+      result+=outCh;lastEmitted=outCh;
     }
     return result;
   }
   async _nl(p){
+    const bodyAll=p.includes('-b a')||p.includes('-ba');
     const file=p.find(a=>!a.startsWith('-'));
     if(!file)throw new Error('nl: 缺少文件参数');
-    const content=await this.vfs.readFile(this.vfs.resolvePath(file));
-    return content.split('\n').map((line,i)=>(i+1)+'\t'+line).join('\n');
+    let content;
+    try{content=await this.vfs.readFile(this.vfs.resolvePath(file));}catch(e){if(p._stdin!=null)content=p._stdin;else throw e;}
+    let n=0;
+    return content.split('\n').map(line=>{if(bodyAll||line.trim()!=='')n++;return(n>0?n:'  ')+'\t'+line;}).join('\n');
   }
   async _tac(p){
     const file=p.find(a=>!a.startsWith('-'));
@@ -1792,20 +2001,25 @@ class BashExecutor{
       return `File: ${file}\nType: directory`;
     }
   }
-  async _sed(p,raw){
-    const sMatch=raw.match(/sed\s+['"]?s\/([^/]+)\/([^/]*)\/(g?)['"]?\s*(.*)/);
-    if(!sMatch)throw new Error('sed: 用法 sed s/old/new/[g] file');
-    const[,oldStr,newStr,global,file]=sMatch;
+  async _sed(p,raw,inPlace){
+    const inPlaceFlag=inPlace===true;
+    // 分隔符动态捕获，negated-class 仅排除实际分隔符
+    const sMatch=raw.match(/sed\s+(-i\s+)?['"]?s([/|#])([^/|#]+)\2([^/|#]*)\2(g?)['"]?\s*(.*)/);
+    if(!sMatch)throw new Error('sed: 用法 sed s/old/new/[g] file（需 -i 才回写文件）');
+    const[, , ,oldStr,newStr,global,file]=sMatch;
     if(!file)throw new Error('sed: 缺少文件参数');
-    const abs=this.vfs.resolvePath(file.trim());
+    const abs=this.vfs.resolvePath(file.trim().split(/\s+/)[0]);
     const content=await this.vfs.readFile(abs);
     const re=new RegExp(oldStr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),global?'g':'');
-    const result=content.replace(re,newStr);
-    await this.vfs.writeFile(abs,result);
+    // 转义替换字符串中的 $ 模式（$& $` $' $$），使 sed 行为接近字面替换
+    const safeNewStr=newStr.replace(/\$/g,'$$$$');
+    const result=content.replace(re,safeNewStr);
+    if(inPlaceFlag){await this.vfs.writeFile(abs,result);return'已就地修改: '+file.trim();}
     return result;
   }
   async _tee(p,raw){
-    const append=raw.includes('-a')||raw.includes('>>');
+    // 从 token 数组而非原始字符串检测 -a，避免文件名含 "-a" 子串误触发追加
+    const append=p.includes('-a')||p.includes('--append');
     const files=p.filter(a=>!a.startsWith('-'));
     if(!files.length)throw new Error('tee: 缺少文件参数');
     const input=p._stdin||'';
@@ -1833,7 +2047,17 @@ class BashExecutor{
       };
       return file+': '+(types[ext]||'data')+', '+f.size+' bytes';
     }catch(e){
-      return file+': directory';
+      if(e.name==='AbortError')throw e;
+      // 区分"不存在"与"是目录"：尝试以目录句柄打开
+      try{
+        const idx=abs.lastIndexOf('/');const dirPath=idx>0?abs.slice(0,idx):'/';const name=abs.slice(idx+1);
+        const dh=await this.vfs.getDirHandle(dirPath);
+        await dh.getDirectoryHandle(name);
+        return file+': directory';
+      }catch(e2){
+        if(e2.name==='AbortError')throw e2;
+        return file+': cannot open (No such file or directory)';
+      }
     }
   }
   _realpath(p){
@@ -1852,8 +2076,10 @@ class BashExecutor{
     if(files.length<2)throw new Error('comm: 需要两个文件参数');
     const c1=await this.vfs.readFile(this.vfs.resolvePath(files[0]));
     const c2=await this.vfs.readFile(this.vfs.resolvePath(files[1]));
-    const l1=c1.split('\n').filter(Boolean);
-    const l2=c2.split('\n').filter(Boolean);
+    // 仅去尾换行产生的空尾元素，保留行内的合法空行（GNU comm 视空行为可比较记录）
+    const stripTail=s=>s.endsWith('\n')?s.slice(0,-1):s;
+    const l1=stripTail(c1).split('\n');
+    const l2=stripTail(c2).split('\n');
     const only1=[],only2=[],both=[];
     let i=0,j=0;
     while(i<l1.length&&j<l2.length){
@@ -1899,19 +2125,27 @@ class BashExecutor{
   async _split(p){
     const linesIdx=p.indexOf('-l');
     const linesPerFile=linesIdx>=0?parseInt(p[linesIdx+1])||1000:1000;
-    const prefixIdx=p.indexOf('-d');
-    const prefix=prefixIdx>=0?p[prefixIdx+1]:'x';
-    const file=p.find(a=>!a.startsWith('-')&&a!==String(linesPerFile)&&a!==prefix);
+    const numericSuffix=p.includes('-d');
+    const aIdx=p.indexOf('-a');
+    const suffixWidth=aIdx>=0?(parseInt(p[aIdx+1])||2):2;
+    const prefix=p.find(a=>!a.startsWith('-')&&a!=='-l'&&a!=='-d'&&a!=='-a'&&a!==String(linesPerFile)&&a!==String(suffixWidth))||'x';
+    const fileIdx=p.indexOf(prefix);
+    const file=fileIdx>=0?p[fileIdx]:null;
     if(!file)throw new Error('split: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     const lines=content.split('\n');
     const chunks=[];
-    for(let i=0;i<lines.length;i+=linesPerFile){
-      chunks.push(lines.slice(i,i+linesPerFile).join('\n'));
-    }
+    for(let i=0;i<lines.length;i+=linesPerFile)chunks.push(lines.slice(i,i+linesPerFile).join('\n'));
     const results=[];
     for(let i=0;i<chunks.length;i++){
-      const suffix=String(i).padStart(prefix.length,'0');
+      let suffix;
+      if(numericSuffix){suffix=String(i).padStart(suffixWidth,'0');}
+      else{
+        // 字母后缀：xaa, xab, ..., xzz, xaaa...
+        let n=i,suf='';
+        for(let d=0;(n>0||d===0)&&d<suffixWidth;d++){suf=String.fromCharCode(97+(n%26))+suf;n=Math.floor(n/26);}
+        suffix=suf||'a';
+      }
       const name=prefix+suffix;
       await this.vfs.writeFile(this.vfs.resolvePath(name),chunks[i]);
       results.push(name);
@@ -1933,38 +2167,72 @@ class BashExecutor{
   }
   async _mktemp(p){
     const template=p.find(a=>!a.startsWith('-'))||'tmp.XXXXXX';
-    const random=Math.random().toString(36).slice(2,8);
-    const name=template.replace(/X{6}/g,random);
-    await this.vfs.writeFile(this.vfs.resolvePath(name),'');
-    return name;
+    // 灵活匹配连续 X（支持 tmp.XXXXXX / tmp.XXX / etc.），退避重试至多 10 次防碰撞覆盖
+    const xMatch=template.match(/(X+)/);
+    const xGroup=xMatch?xMatch[1]:'XXXXXX';
+    for(let attempt=0;attempt<10;attempt++){
+      const rand=Math.random().toString(36).slice(2,2+xGroup.length);
+      const name=template.replace(/X+/,rand);
+      try{
+        // 若已存在则重试
+        await this.vfs.getFileHandle(this.vfs.resolvePath(name));
+        continue; // 文件已存在，换一个名字
+      }catch(e){
+        if(e.name==='AbortError')throw e;
+        // 不存在 → 创建空文件
+        await this.vfs.writeFile(this.vfs.resolvePath(name),'');
+        return name;
+      }
+    }
+    throw new Error('mktemp: 10 次尝试后仍无法创建唯一临时文件');
   }
   async _od(p){
-    const file=p.find(a=>!a.startsWith('-'));
+    const file=p.find(a=>!a.startsWith('-')&&!['-j','-N','-s','-l'].includes(a));
     if(!file)throw new Error('od: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
-    const bytes=new TextEncoder().encode(content);
+    let bytes=new TextEncoder().encode(content);
+    // 支持 -j skip / -N length 决定起始与读取长度，避免对大文件做无界 dump
+    const jIdx=p.indexOf('-j');const skip=jIdx>=0?(parseInt(p[jIdx+1])??0):0;
+    const nIdx=p.indexOf('-N');
+    // -N 未指定返回 -1（表示无上限）；-N 0 显式取 0 字节；缺参数报错
+    const length=nIdx>=0?(p[nIdx+1]===undefined?NaN:parseInt(p[nIdx+1])):-1;
+    if(isNaN(skip)||isNaN(length))throw new Error('od: -j/-N 需要数字参数');
+    const MAX_DUMP=65536;
+    const effLen=length<0?MAX_DUMP:Math.min(length,MAX_DUMP);
+    if(skip<bytes.length)bytes=bytes.subarray(skip,skip+effLen);
+    else bytes=new Uint8Array(0);
     const lines=[];
     for(let i=0;i<bytes.length;i+=16){
       const chunk=bytes.slice(i,i+16);
       const octal=Array.from(chunk).map(b=>b.toString(8).padStart(3,'0')).join(' ');
       const ascii=Array.from(chunk).map(b=>b>=32&&b<127?String.fromCharCode(b):'.').join('');
-      lines.push(i.toString(8).padStart(6,'0')+' '+octal+'  '+ascii);
+      lines.push((skip+i).toString(8).padStart(6,'0')+' '+octal.padEnd(16*4-1,' ')+'  '+ascii);
     }
-    return lines.join('\n')||'(空文件)';
+    const note=skip>0||length>0||content.length>MAX_DUMP?'\n... (共 '+new TextEncoder().encode(content).length+' 字节，已截取 '+(skip)+'+'+bytes.length+')':'';
+    return lines.join('\n')||'(空文件)'+note;
   }
   async _xxd(p){
-    const file=p.find(a=>!a.startsWith('-'));
+    const file=p.find(a=>!a.startsWith('-')&&!['-j','-N','-s','-l'].includes(a));
     if(!file)throw new Error('xxd: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
-    const bytes=new TextEncoder().encode(content);
+    let bytes=new TextEncoder().encode(content);
+    const jIdx=p.indexOf('-j');const skip=jIdx>=0?(parseInt(p[jIdx+1])??0):0;
+    const nIdx=p.indexOf('-N');
+    const length=nIdx>=0?(p[nIdx+1]===undefined?NaN:parseInt(p[nIdx+1])):-1;
+    if(isNaN(skip)||isNaN(length))throw new Error('xxd: -j/-N 需要数字参数');
+    const MAX_DUMP=65536;
+    const effLen=length<0?MAX_DUMP:Math.min(length,MAX_DUMP);
+    if(skip<bytes.length)bytes=bytes.subarray(skip,skip+effLen);
+    else bytes=new Uint8Array(0);
     const lines=[];
     for(let i=0;i<bytes.length;i+=16){
       const chunk=bytes.slice(i,i+16);
       const hex=Array.from(chunk).map(b=>b.toString(16).padStart(2,'0')).join('');
       const ascii=Array.from(chunk).map(b=>b>=32&&b<127?String.fromCharCode(b):'.').join('');
-      lines.push(i.toString(16).padStart(8,'0')+': '+hex.padEnd(32,' ')+' '+ascii);
+      lines.push((skip+i).toString(16).padStart(8,'0')+': '+hex.padEnd(32,' ')+' '+ascii);
     }
-    return lines.join('\n')||'(空文件)';
+    const note=skip>0||length>0||content.length>MAX_DUMP?'\n... (共 '+new TextEncoder().encode(content).length+' 字节，已截取 '+(skip)+'+'+bytes.length+')':'';
+    return lines.join('\n')||'(空文件)'+note;
   }
   _yes(p){
     const text=p.join(' ')||'y';
@@ -1984,39 +2252,53 @@ class BashExecutor{
   }
   async _fmt(p){
     const widthIdx=p.indexOf('-w');
-    const width=widthIdx>=0?parseInt(p[widthIdx+1])||76:76;
-    const file=p.find(a=>!a.startsWith('-')&&a!==String(width));
+    let width=76;
+    if(widthIdx>=0&&p[widthIdx+1]!==undefined){const w=parseInt(p[widthIdx+1]);if(!isNaN(w)&&w>0)width=w;else if(w===0)throw new Error('fmt: -w 必须为正整数');}
+    // 按 index 跳过 -w 及其值，避免文件名巧合等于宽度字符串被误排除
+    const skipIdx=new Set([widthIdx,widthIdx+1].filter(i=>i>=0));
+    const file=p.find((a,i)=>!a.startsWith('-')&&!skipIdx.has(i));
     if(!file)throw new Error('fmt: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
-    const words=content.split(/\s+/).filter(Boolean);
-    const lines=[];
-    let current='';
-    for(const word of words){
-      if(current.length+word.length+1>width&&current){
-        lines.push(current);
-        current=word;
-      }else{
-        current=current?current+' '+word:word;
+    // 保留段落分隔（空行）：先按行分组，空行视为段落边界
+    const paragraphs=content.split(/\n\s*\n/);
+    const outLines=[];
+    for(const para of paragraphs){
+      const words=para.split(/\s+/).filter(Boolean);
+      if(!words.length){outLines.push('');continue;}
+      let current='';
+      for(const word of words){
+        if(current.length+word.length+1>width&&current){outLines.push(current);current=word;}
+        else{current=current?current+' '+word:word;}
       }
+      if(current)outLines.push(current);
     }
-    if(current)lines.push(current);
-    return lines.join('\n');
+    return outLines.join('\n');
   }
   async _csplit(p){
-    const patternIdx=p.indexOf('/'+p.find(a=>a.startsWith('/')&&a.endsWith('/'))?.slice(1,-1)+'/');
-    const file=p.find(a=>!a.startsWith('-')&&!a.includes('/'));
+    // 识别 /pattern/ 参数（第一个满足 /^\/.*\/$/ 的 token）
+    const patternArg=p.find(a=>/^\/.*\/$/.test(a));
+    // 文件：第一个非 flag、非 pattern 的 token（允许含 /）
+    const skipTokens=new Set(['-f','-b','-k']).add(patternArg);
+    const file=p.find(a=>!a.startsWith('-')&&a!==patternArg);
     if(!file)throw new Error('csplit: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     const lines=content.split('\n');
-    const chunks=[];
-    let current=[];
-    for(const line of lines){
-      current.push(line);
+    const chunks=[];let current=[];
+    // 仅在提供了 pattern 时才按行匹配切分；无 pattern 时不切分
+    if(patternArg){
+      let re;
+      try{re=new RegExp(patternArg.slice(1,-1));}catch(e){re=new RegExp(patternArg.slice(1,-1).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));}
+      for(const line of lines){
+        if(re.test(line)){if(current.length)chunks.push(current.join('\n'));current=[line];}
+        else current.push(line);
+      }
+    }else{
+      current=lines.slice();
     }
     if(current.length)chunks.push(current.join('\n'));
     const results=[];
     for(let i=0;i<chunks.length;i++){
-      const name=file+'.'+i;
+      const name='xx'+String(i).padStart(2,'0');
       await this.vfs.writeFile(this.vfs.resolvePath(name),chunks[i]);
       results.push(name);
     }
@@ -2033,24 +2315,29 @@ class BashExecutor{
     if(files.length<2)throw new Error('join: 需要两个文件参数');
     const c1=await this.vfs.readFile(this.vfs.resolvePath(files[0]));
     const c2=await this.vfs.readFile(this.vfs.resolvePath(files[1]));
-    const l1=c1.split('\n').filter(Boolean);
-    const l2=c2.split('\n').filter(Boolean);
+    const stripTail=s=>s.endsWith('\n')?s.slice(0,-1):s;
+    const l1=stripTail(c1).split('\n');
+    const l2=stripTail(c2).split('\n');
+    // file2 重复键用列表保留所有行，避免 set 覆盖只留最后一行（GNU join 输出笛卡尔积）
     const map2=new Map();
     for(const line of l2){
       const key=line.split(/\s+/)[0];
-      map2.set(key,line);
+      if(!map2.has(key))map2.set(key,[]);
+      map2.get(key).push(line);
     }
     const result=[];
     for(const line of l1){
       const key=line.split(/\s+/)[0];
       if(map2.has(key)){
-        result.push(line+' '+map2.get(key).split(/\s+/).slice(1).join(' '));
+        for(const m2 of map2.get(key)){
+          result.push(line+' '+m2.split(/\s+/).slice(1).join(' '));
+        }
       }
     }
     return result.join('\n')||'(无匹配行)';
   }
 }
-let _fileSystem=null;let _bashExec=null;let _syncWarned=false;let _syncQueue=[];let _syncing=false;
+let _fileSystem=null;let _bashExec=null;let _syncWarned=false;let _syncWarnedAboutDrop=false;let _syncQueue=[];let _syncing=false;
 const ALLOWED_TOP_DIRS=['files','guest','images','memory','mud','music','project','tmp','videos','voice'];
 function isRootPath(p){
   if(!p||typeof p!=='string')return true;
@@ -2063,22 +2350,34 @@ async function _ensureFS(){
   _fileSystem=new VirtualFS();await _fileSystem.ready;return true;
 }
 
+// 可中断 sleep：每 500ms 检查 stopRequested，快速响应用户停止
+async function interruptibleSleep(ms){
+  const chunks=Math.ceil(ms/500);
+  for(let i=0;i<chunks;i++){
+    if(stopRequested)return;
+    await new Promise(r=>setTimeout(r,Math.min(500,ms-i*500)));
+  }
+}
+
 // ── Tool Handlers ──
 const toolHandlers={
   async web_search(args,ctx){
     if(_webSearchQuotaExhausted)return '网络搜索暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.query||typeof args.query!=='string')return '搜索出错: 缺少 query 参数';
+    if(args.query.length>2000)return '搜索出错: query 过长（'+args.query.length+'字符，上限2000）。请精简搜索词。';
     try{
     const data=await proxyRequest(MM_PROVIDER,'/chat/completions',{model:MM_MODEL,messages:[{role:'system',content:'你是一个搜索助手。以JSON格式返回：{"results":[{"title":"标题","url":"链接","snippet":"摘要"}]}。不要使用工具调用，直接返回JSON。'},{role:'user',content:args.query}],temperature:.3,max_tokens:8192});
     let content=data.choices?.[0]?.message?.content||'';
     content=content.replace(/<thinking>[\s\S]*?<\/thinking>/g,'').trim();
     const jsonMatch=content.match(/\{[^]*"results"[^]*\}/);
-    if(jsonMatch)return JSON.stringify(JSON.parse(jsonMatch[0]).results,null,2);
+    if(jsonMatch){try{const parsed=JSON.parse(jsonMatch[0]);if(parsed&&Array.isArray(parsed.results))return JSON.stringify(parsed.results,null,2);}catch(e){/* JSON 解析失败，回退返回原文 */}}
     return content;
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_webSearchQuotaExhausted=true;return '网络搜索失败，所有 API Key 配额已用尽';}return '搜索出错: '+e.message;}
   },
   async vision_recognition(args,ctx){
-    // 通过服务器代理下载图片（解决 MiniMax 无法访问站内/私有 URL 的问题）
     if(_visionQuotaExhausted)return '图像识别暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.image_url||typeof args.image_url!=='string')return '图像识别出错: 缺少 image_url 参数';
+    if(args.question&&typeof args.question==='string'&&args.question.length>2000)return '图像识别出错: question 过长（'+args.question.length+'字符，上限2000）';
     let imgUrl=args.image_url;
     try{
       const proxyImg=await apiCall('image_proxy',{url:args.image_url});
@@ -2091,71 +2390,116 @@ const toolHandlers={
   },
   async image_generation(args,ctx){
     if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.prompt||typeof args.prompt!=='string')return '图片生成失败: 缺少 prompt 参数';
+    const VALID_RATIOS=['1:1','16:9','9:16','4:3','3:4','3:2','2:3'];
+    const aspectRatio=args.aspect_ratio&&VALID_RATIOS.includes(args.aspect_ratio)?args.aspect_ratio:'1:1';
+    const n=Math.min(Math.max(Number(args.n)||1,1),9);
+    if(args.n!==undefined&&(Number(args.n)||0)<1)return '图片生成失败: n 参数必须为正整数（1-9）';
+    if(args.aspect_ratio&&!VALID_RATIOS.includes(args.aspect_ratio))addStepMessage('⚠️ aspect_ratio '+args.aspect_ratio+' 非法，已回退为 1:1。合法值: '+VALID_RATIOS.join(', '));
     try{
-    const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:args.aspect_ratio||'1:1',n:args.n||1,response_format:'url'};if(args.seed)imgBody.seed=args.seed;if(args.prompt_optimizer)imgBody.prompt_optimizer=true;if(args.width&&args.height){imgBody.width=args.width;imgBody.height=args.height;delete imgBody.aspect_ratio;}if(args.aigc_watermark)imgBody.aigc_watermark=true;const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
+    const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:aspectRatio,n:n,response_format:'url'};
+    if(args.seed!==undefined&&args.seed!==null){const seedNum=Number(args.seed);if(Number.isFinite(seedNum)&&seedNum>=0)imgBody.seed=Math.floor(seedNum);}
+    if(args.prompt_optimizer===true)imgBody.prompt_optimizer=true;
+    if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>0&&h<1e6&&h>0&&h<1e6){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
+    if(args.aigc_watermark===true)imgBody.aigc_watermark=true;
+    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
     const urls=data.data?.image_urls||[];
     const failed=data.data?.failed_count||0;
     if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张失败)';
     if(!urls.length)return '未生成图像';
-    if(failed>0)addStepMessage('⚠️ '+failed+'张图片生成失败');
+    if(failed>0)addStepMessage('⚠️ 成功 '+urls.length+' 张 / 失败 '+failed+' 张（共请求 '+n+' 张）');
+    // 并行保存多张图片（彼此独立，避免顺序阻塞；n=9 时最差 18min → 并行后 ~2min）
     const shareUrls=[];
-    for(const url of urls){
-      const f=await saveMediaToUser(url,'images','jpg');
-      if(f){
+    const saveResults=await Promise.allSettled(urls.map(url=>saveMediaToUser(url,'images')));
+    const savedFiles=[];
+    const renderUrls=[]; // 可渲染 URL（保存成功用分享链/下载链，失败回退 CDN）
+    saveResults.forEach((s,i)=>{
+      const url=urls[i];
+      if(s.status==='fulfilled'&&s.value){
+        const f=s.value;
+        savedFiles.push(f);
         addAgentMessage('📁 已保存: '+f,'image');
-        const su=await getShareUrl(f);
-        if(mudActive&&showMudImage)shareUrls.push(su||PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));
-      }else if(mudActive&&showMudImage){shareUrls.push(url);}
+        // 构建可渲染 URL（非 MUD 模式也用，确保 <img src> 能访问保存后的文件）
+        const dlUrl=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f);
+        renderUrls.push(Promise.resolve(getShareUrl(f)).then(su=>su||dlUrl).catch(()=>dlUrl));
+        if(mudActive&&showMudImage)shareUrls.push(renderUrls[renderUrls.length-1]);
+      }else{
+        if(s.status==='rejected')addStepMessage('⚠️ 第 '+(i+1)+' 张保存失败: '+(s.reason?.message||'未知'));
+        renderUrls.push(Promise.resolve(url));
+        if(mudActive&&showMudImage)shareUrls.push(renderUrls[renderUrls.length-1]);
+        savedFiles.push(url);
+      }
+    });
+    // 并行解析分享/下载链接
+    const resolvedRender=await Promise.all(renderUrls);
+    if(mudActive&&showMudImage&&shareUrls.length){
+      // 累加而非覆盖：同一批次多个 image_generation 并发调用时各自贡献，避免相互覆盖丢失
+      const resolved=await Promise.all(shareUrls);
+      _mudPendingImage=(_mudPendingImage||[]).concat(resolved);
     }
-    if(mudActive&&showMudImage&&shareUrls.length)_mudPendingImage=shareUrls;
-    return JSON.stringify(urls);
+    // 返回可渲染 URL（供 _execSingleTool 正确显示图片，避免相对沙箱路径 404）
+    return JSON.stringify(resolvedRender);
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_imageQuotaExhausted=true;return '图片生成失败，所有 API Key 配额已用尽';}return '图片生成出错: '+e.message;}
   },
   async video_generation(args,ctx){
     // 会话级配额耗尽保护：阻止 AI 在配额恢复前重复调用
     if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.prompt||typeof args.prompt!=='string')return '视频生成失败: 缺少 prompt 参数';
     addStepMessage('🎬 开始生成视频（T2V文生视频/Hailuo-2.3），预计1-2分钟...');
+    try{
     // 按 mmx-cli 参数模型构建请求体：仅含 MiniMax API 支持的字段
     const vidBody={model:'MiniMax-Hailuo-2.3',prompt:args.prompt};
-    if(args.first_frame_image)vidBody.first_frame_image=args.first_frame_image;
-    if(args.last_frame_image&&args.first_frame_image){vidBody.last_frame_image=args.last_frame_image;vidBody.model='MiniMax-Hailuo-02';}
-    if(args.subject_image){vidBody.subject_reference=[{type:'character',image:[args.subject_image]}];vidBody.model='S2V-01';}
+    if(args.subject_image){vidBody.subject_reference=[{type:'character',image:[args.subject_image]}];vidBody.model='S2V-01';addStepMessage('🎬 模式: S2V 角色参考');}
+    else if(args.first_frame_image){vidBody.first_frame_image=args.first_frame_image;if(args.last_frame_image){vidBody.last_frame_image=args.last_frame_image;vidBody.model='MiniMax-Hailuo-02';addStepMessage('🎬 模式: 首尾帧 I2V');}else{addStepMessage('🎬 模式: 首帧 I2V');}}
     addStepMessage('🎬 已提交视频任务，等待生成...');
-    // 当所有 Key 耗尽时自动重试（最多 2 次）
+    // 当所有 Key 耗尽时自动重试（最多重试 2 次，共提交 3 次）
     for(let retry=0;retry<3;retry++){
       if(stopRequested)return '操作已取消';
     // Step 1: 异步提交
     const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',vidBody,30000);
-    if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交...');await new Promise(r=>setTimeout(r,5000));continue;}
+    if(createResp.error&&retry<2){const isExhaust=createResp.error.includes('exhausted');addStepMessage('🔄 视频提交失败'+(isExhaust?'（Key 耗尽）':'')+'，重试... ('+(createResp.message||createResp.error).slice(0,80)+')');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
     if(createResp.error)return '视频生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;if(!taskId)return '视频生成失败：未获取到任务ID';
     // Step 2: 轮询等待结果（最多等 3 分钟，指数退避 3s→10s, 与音乐生成一致）
     const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
     while(Date.now()-start<MAX_WAIT){
-      await new Promise(r=>setTimeout(r,delay));if(stopRequested)return '操作已取消';
+      await interruptibleSleep(delay);if(stopRequested)return '操作已取消';
       const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
       lastResp=pollResp;break;
     }
-    if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await new Promise(r=>setTimeout(r,3000));continue;}return '视频生成超时，请稍后重试';}
+    if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '视频生成超时，请稍后重试';}
     // Key 全部耗尽？自动重试提交
     if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
       _videoQuotaExhausted=true;
-      if(retry<2){addStepMessage('🔄 Key 配额耗尽，重新提交（第'+(retry+1)+'次重试）...');await new Promise(r=>setTimeout(r,5000));continue;}
+      if(retry<2){addStepMessage('🔄 Key 配额耗尽，重新提交（第'+(retry+1)+'次重试）...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
       return '视频生成失败，所有 API Key 配额已用尽，已自动禁止后续调用。请在午夜 UTC+8 后刷新页面重试'+(lastResp.message?': '+lastResp.message:'');
     }
     if(lastResp.error)return '视频生成失败: '+(lastResp.message||lastResp.error);
     const br_v=lastResp.base_resp||{};
     if(br_v.status_code&&br_v.status_code!==0)return '视频生成失败: '+(br_v.status_msg||'错误码 '+br_v.status_code);
     let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
-    if(!url&&lastResp.file_id){try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{});url=fi.file?.download_url||fi.download_url||'';}catch(e){}}
-    if(url){const f=await saveMediaToUser(url,'videos','mp4');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
-    return '视频生成完成但无URL'+(lastResp._http_code?' (HTTP '+lastResp._http_code+')':'');
+    let fileIdErr='';
+    if(!url&&lastResp.file_id){
+      // 文件可能尚未就绪：最多重试 4 次，间隔 3s，短超时 30s
+      for(let fr=0;fr<4;fr++){
+        if(stopRequested)break;
+        try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{},30000);
+          url=fi.file?.download_url||fi.download_url||'';
+          if(url)break;
+        }catch(e){fileIdErr=' (file_id='+lastResp.file_id+' 检索失败: '+e.message+')';}
+        if(fr<3)await interruptibleSleep(3000);
+      }
+    }
+    if(url){const f=await saveMediaToUser(url,'videos');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+    return '视频生成完成但无 URL'+(fileIdErr||'（response 未携带 video_url/可下载链接）')+(lastResp._http_code?' (HTTP '+lastResp._http_code+')':'');
     } // end retry loop
     return '视频生成失败，多次重试后未获取到有效结果';
+    }catch(e){if(e.name==='AbortError')throw e;return '视频生成出错: '+e.message;}
   },
   async music_generation(args,ctx){
     if(_musicQuotaExhausted)return '音乐生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.prompt&&!args.genre&&!args.mood&&!args.vocals&&!args.instruments)return '音乐生成失败: 缺少 prompt 或 genre/mood 等描述参数';
     try{
     // 官方 SDK 做法：genre/mood/vocals 等结构化参数折叠进 prompt
     const structured=[];
@@ -2166,10 +2510,14 @@ const toolHandlers={
     if(args.tempo)structured.push('Tempo: '+args.tempo);
     if(args.bpm)structured.push('BPM: '+args.bpm);
     if(args.key)structured.push('Key: '+args.key);
-    const fullPrompt=structured.length>0?(args.prompt?args.prompt+'. '+structured.join('. '):structured.join('. ')):args.prompt;
+    const fullPrompt=structured.length>0?(args.prompt?args.prompt+'. '+structured.join('. '):structured.join('. ')):(args.prompt||'');
     const body={model:'music-2.6',prompt:fullPrompt};if(args.lyrics)body.lyrics=args.lyrics;if(args.instrumental)body.is_instrumental=true;else if(!args.lyrics&&!args.lyrics_optimizer)body.is_instrumental=true;if(args.lyrics_optimizer)body.lyrics_optimizer=true;body.audio_setting={format:'mp3',sample_rate:44100,bitrate:256000};body.output_format='url';
+    // 与 video 一致：Key 耗尽时自动重试（最多重试 2 次，共提交 3 次）
+    for(let retry=0;retry<3;retry++){
+    if(stopRequested)return '操作已取消';
     // Step 1: 异步创建音乐任务（proxy.php 立即返回 task_id，后台 worker 慢慢等 MiniMax）
     const createResp=await proxyRequest(MM_PROVIDER,'/music_generation',body,30000);
+    if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交音乐任务...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
     if(createResp.error)return '音乐生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;
     if(!taskId)return '音乐生成失败：未获取到任务ID';
@@ -2179,7 +2527,7 @@ const toolHandlers={
     let delay=3000;
     let lastResp=null;
     while(Date.now()-start<MAX_WAIT){
-      await new Promise(r=>setTimeout(r,delay));
+      await interruptibleSleep(delay);
       if(stopRequested)return '操作已取消';
       const pollResp=await proxyRequest(MM_PROVIDER,'/music_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
@@ -2187,35 +2535,45 @@ const toolHandlers={
       lastResp=pollResp;
       break;
     }
-    if(!lastResp)return '音乐生成超时（3分钟），请稍后重试';
+    if(!lastResp){if(retry<2){addStepMessage('🔄 音乐生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '音乐生成超时（3分钟），请稍后重试';}
     if(lastResp.error){
-      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){_musicQuotaExhausted=true;return '音乐生成失败，所有 API Key 配额已用尽';}
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+        _musicQuotaExhausted=true;
+        if(retry<2){addStepMessage('🔄 Key 配额耗尽，重新提交音乐任务（第'+(retry+1)+'次重试）...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+        return '音乐生成失败，所有 API Key 配额已用尽';
+      }
       return '音乐生成失败: '+(lastResp.message||lastResp.error);
     }
     const br_m=lastResp.base_resp||{};
     if(br_m.status_code&&br_m.status_code!==0)return '音乐生成失败: '+(br_m.status_msg||'错误码 '+br_m.status_code);
     const url=lastResp.audio_url||lastResp.data?.audio_url||lastResp.data?.audio||'';
-    if(url){const f=await saveMediaToUser(url,'music','mp3');if(f){addAgentMessage('📁 已保存: '+f,'music');const su=await getShareUrl(f);if(su)return su;}return url;}
+    if(url){const f=await saveMediaToUser(url,'music');if(f){addAgentMessage('📁 已保存: '+f,'music');const su=await getShareUrl(f);if(su)return su;}return url;}
     return '音乐生成失败，请检查输入描述或稍后重试';
+    } // end retry loop
+    return '音乐生成失败，多次重试后未获取到有效结果';
     }catch(e){if(e.name==='AbortError')throw e;return '音乐生成出错: '+e.message;}
   },
   async text_to_speech(args,ctx){
     if(_ttsQuotaExhausted)return '语音生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.text||typeof args.text!=='string')return '语音生成失败: 缺少 text 参数';
+    if(args.text.length>3000)return '语音生成失败: text 过长（'+args.text.length+'字符，上限3000）。请分段生成。';
+    const speed=args.speed||1.0;if(typeof speed!=='number'||speed<0.5||speed>2.0)return '语音生成失败: speed 参数需在 0.5-2.0 之间';
     try{
-      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:args.speed||1.0},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
+      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:speed},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
       const baseResp=data.base_resp||{};
       if(baseResp.status_code&&baseResp.status_code!==0){
         const errMsg=baseResp.status_msg||'未知错误';
         return '语音生成失败: '+errMsg+'。可用音色: female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), female-tianmei(甜美), male-qn-qingse(青年男声), male-shaoshuai(少帅), male-zhixing(磁性), female-zhixing(知性), male-jingpin(精品男声), female-jingpin(精品女声)';
       }
       const url=data.audio_url||data.data?.audio_url||data.data?.audio||'';
-      if(url){const f=await saveMediaToUser(url,'voice','mp3');if(f){addAgentMessage('📁 已保存: '+f,'voice');const su=await getShareUrl(f);if(mudActive&&showMudVoice){_mudPendingVoice=su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}else if(mudActive&&showMudVoice){_mudPendingVoice=url;}return url;}
+      if(url){const f=await saveMediaToUser(url,'voice');if(f){addAgentMessage('📁 已保存: '+f,'voice');const su=await getShareUrl(f);if(mudActive&&showMudVoice){_mudPendingVoice=su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}else if(mudActive&&showMudVoice){_mudPendingVoice=url;}return url;}
       return '语音生成完成但未获取到音频URL，API响应结构: '+JSON.stringify(data).slice(0,300);
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_ttsQuotaExhausted=true;return '语音生成失败，所有 API Key 配额已用尽';}return '语音生成出错: '+e.message;}
   },
   async bash(args,ctx){
     const cmd=(args.command||'').trim();
     if(!cmd)return'请提供命令';
+    if(cmd.length>100000)return'bash 命令过长（'+cmd.length+'字符，上限100000）。请使用 write 工具写入大文件。';
     if(!await _ensureFS())return'当前浏览器不支持 OPFS，无法使用 bash 模拟。建议使用 read/write/edit 工具。';
     try{
       if(!_bashExec)_bashExec=new BashExecutor(_fileSystem);
@@ -2224,41 +2582,57 @@ const toolHandlers={
     }catch(e){if(e.name==='AbortError')throw e;return'bash 执行失败: '+e.message;}
   },
   async read(args,ctx){
+    if(!args.file_path||typeof args.file_path!=='string')return '读取失败: 缺少 file_path 参数';
     try{
       const fp=args.file_path;
       if(await _ensureFS()){
         try{
           const fh=await _fileSystem.getFileHandle(_fileSystem.resolvePath(fp));
           const text=await(await fh.getFile()).text();
-          if(args.offset||args.limit){const lines=text.split('\n');return lines.slice(args.offset||0,(args.offset||0)+(args.limit||lines.length)).join('\n');}
+          if(args.offset!==undefined||args.limit!==undefined){
+            const lines=text.split('\n');
+            const offset=Math.max(0,Number(args.offset)||0);
+            const limitNum=Number(args.limit);
+            const limit=Number.isFinite(limitNum)&&limitNum>0?limitNum:lines.length;
+            return lines.slice(offset,offset+limit).join('\n');
+          }
           return text;
-        }catch(e){/* not found in OPFS, fallback to server */}
+        }catch(e){if(e.name==='AbortError')throw e;if(e.name!=='NotFoundError'&&e.code!==8){addStepMessage('⚠️ OPFS 读取异常: '+e.message+'，回退到服务器');}/* 未找到则回退服务器 */}
       }
       const res=await apiCall('file_read',{file_path:fp,offset:args.offset,limit:args.limit});
       // 服务器读取成功后同步到 OPFS
       if(res.content!==undefined&&await _ensureFS()){
         try{await _fileSystem.writeFile(_fileSystem.resolvePath(fp),res.content,false,true);}catch(e){}
       }
-      return res.content;}
+      return res.content===undefined?'(空文件或无内容)':res.content;}
     catch(e){if(e.name==='AbortError')throw e;return '读取失败: '+e.message;}
   },
   async write(args,ctx){
+    if(!args.file_path||typeof args.file_path!=='string')return '写入失败: 缺少 file_path 参数';
+    if(args.content===undefined||args.content===null)return '写入失败: 缺少 content 参数';
+    const contentStr=typeof args.content==='string'?args.content:(typeof args.content==='object'?'写入失败: content 必须是字符串，不能是对象':'写入失败: content 类型非法');
+    if(contentStr.startsWith('写入失败: '))return contentStr;
     try{
       const fpFinal=args.file_path;
       if(await _ensureFS()){
         const abs=_fileSystem.resolvePath(fpFinal);
-        await _fileSystem.writeFile(abs,args.content);
-        return'文件已写入: '+args.file_path;
+        await _fileSystem.writeFile(abs,contentStr);
+        if(currentUser)await fetchQuota();return'文件已写入: '+args.file_path;
       }
-      const res=await apiCall('file_write',{file_path:fpFinal,content:args.content});
+      const res=await apiCall('file_write',{file_path:fpFinal,content:contentStr});
       // 服务器写入成功后同步到 OPFS
       if(res.success&&await _ensureFS()){
-        try{await _fileSystem.writeFile(_fileSystem.resolvePath(fpFinal),args.content,false,true);}catch(e){}
+        try{await _fileSystem.writeFile(_fileSystem.resolvePath(fpFinal),contentStr,false,true);}catch(e){}
       }
-      if(currentUser)await fetchQuota();return res.message;}
+      if(currentUser)await fetchQuota();return res.message||'文件已写入';}
     catch(e){if(e.name==='AbortError')throw e;return '写入失败: '+e.message;}
   },
   async edit(args,ctx){
+    if(!args.file_path||typeof args.file_path!=='string')return '编辑失败: 缺少 file_path 参数';
+    if(args.old_string===undefined||args.old_string===null)return '编辑失败: 缺少 old_string 参数';
+    if(args.new_string===undefined||args.new_string===null)return '编辑失败: 缺少 new_string 参数';
+    if(args.old_string==='')return '编辑失败: old_string 不能为空字符串';
+    const replaceAll=args.replace_all===true;
     try{
       const fp=args.file_path;
       if(await _ensureFS()){
@@ -2266,11 +2640,15 @@ const toolHandlers={
         const text=await _fileSystem.readFile(abs);
         const oldStr=args.old_string;
         if(!text.includes(oldStr))return'编辑失败: 未找到匹配字符串';
-        const newText=args.replace_all?text.replaceAll(oldStr,args.new_string):text.replace(oldStr,args.new_string);
+        const totalMatches=text.split(oldStr).length-1;
+        const newText=replaceAll?text.replaceAll(oldStr,args.new_string):text.replace(oldStr,args.new_string);
+        if(newText===text)return'编辑失败: 替换后内容无变化（old_string 与 new_string 相同）';
         await _fileSystem.writeFile(abs,newText);
-        return'文件已编辑: '+args.file_path;
+        if(currentUser)await fetchQuota();
+        const extraMsg=!replaceAll&&totalMatches>1?'（仅替换第1处，共'+totalMatches+'处匹配；如需全部替换请设 replace_all=true）':'';
+        return'文件已编辑: '+args.file_path+extraMsg;
       }
-      const res=await apiCall('file_edit',{file_path:fp,old_string:args.old_string,new_string:args.new_string,replace_all:args.replace_all});
+      const res=await apiCall('file_edit',{file_path:fp,old_string:args.old_string,new_string:args.new_string,replace_all:replaceAll});
       // 服务器编辑成功后同步到 OPFS（读取最新内容写入）
       if(res.success&&await _ensureFS()){
         try{
@@ -2278,23 +2656,34 @@ const toolHandlers={
           if(latest.content!==undefined)await _fileSystem.writeFile(_fileSystem.resolvePath(fp),latest.content,false,true);
         }catch(e){}
       }
-      if(currentUser)await fetchQuota();return res.message;}
+      if(currentUser)await fetchQuota();return res.message||'文件已编辑';}
     catch(e){if(e.name==='AbortError')throw e;return '编辑失败: '+e.message;}
   },
   async AskUserQuestion(args,ctx){
+    if(!args.question||typeof args.question!=='string')return '提问失败: 缺少 question 参数';
     const{question,options}=args;
     let msg='🤔 **'+question+'**\n';
-    if(options&&options.length){msg+='\n请选择：\n';options.forEach((opt,i)=>msg+=(i+1)+'. '+opt+'\n');}
+    if(options&&Array.isArray(options)&&options.length){
+      const maxOpts=8;
+      if(options.length>maxOpts)addStepMessage('⚠️ options 超过 '+maxOpts+' 个，仅显示前 '+maxOpts+' 个');
+      msg+='\n请选择：\n';
+      options.slice(0,maxOpts).forEach((opt,i)=>msg+=(i+1)+'. '+(typeof opt==='string'?opt:String(opt))+'\n');
+    }
     return{displayText:msg,awaitUserResponse:true,metadata:{question,options}};
   },
   async web_fetch(args,ctx){
+    if(!args.url||typeof args.url!=='string')return '抓取失败: 缺少 url 参数';
+    if(!/^https?:\/\//i.test(args.url))return '抓取失败: url 必须以 http:// 或 https:// 开头';
+    const maxChars=Math.min(Math.max(Number(args.max_chars)||50000,1000),200000);
+    if(args.max_chars!==undefined&&Number(args.max_chars)>200000)addStepMessage('⚠️ max_chars 已限制到上限 200000');
     try{
-      const res=await apiCall('web_fetch',{url:args.url,max_chars:args.max_chars||50000});
+      const res=await apiCall('web_fetch',{url:args.url,max_chars:maxChars});
       if(res.error)return '抓取失败: '+res.error;
       return '📄 来自 '+res.url+' (HTTP '+res.httpCode+', '+res.length+' 字符)\n\n'+res.content;
     }catch(e){if(e.name==='AbortError')throw e;return '抓取出错: '+e.message;}
   },
   async mud_action(args,ctx){
+    if(!args.command||typeof args.command!=='string')return 'MUD命令错误: 缺少 command 参数';
     // 如果MUD未激活，先自动初始化（清空旧状态）
     if(!mudActive){
       _mudState=null;
@@ -2342,8 +2731,8 @@ class EnhancedToolExecutor{
     if(content.length<=maxLen)return content;
     try{
       const parsed=JSON.parse(content);
-      if(Array.isArray(parsed)){const keep=3;const kept=parsed.slice(0,keep);return JSON.stringify(kept,null,2)+`\n\n... (${parsed.length-keep} more items truncated, total ${parsed.length})`+(parsed.length>keep?'\n提示：如需查看后续数据，可告知用户以获取完整结果。':'');}
-      if(typeof parsed==='object'&&parsed!==null){const keys=Object.keys(parsed);const kk=keys.slice(0,5);const kept={};kk.forEach(k=>{kept[k]=parsed[k];});return JSON.stringify(kept,null,2)+`\n\n... (${keys.length-5} more keys truncated)`;}
+      if(Array.isArray(parsed)){const keep=3;if(parsed.length>keep){const kept=parsed.slice(0,keep);return JSON.stringify(kept,null,2)+`\n\n... (${parsed.length-keep} more items truncated, total ${parsed.length})\n提示：如需查看后续数据，可告知用户以获取完整结果。`;}}
+      if(typeof parsed==='object'&&parsed!==null){const keys=Object.keys(parsed);const cap=5;if(keys.length>cap){const kk=keys.slice(0,cap);const kept={};kk.forEach(k=>{kept[k]=parsed[k];});return JSON.stringify(kept,null,2)+`\n\n... (${keys.length-cap} more keys truncated)`;}}
     }catch(e){}
     const half=Math.floor(maxLen*0.6);const head=content.slice(0,half);const tail=content.slice(-(maxLen-half));
     addStepMessage('⚠️ 工具结果过长 ('+Math.ceil(content.length/1024)+'KB)，截断保留首尾');
@@ -2355,12 +2744,14 @@ class EnhancedToolExecutor{
     try{args=JSON.parse(argsJson);}catch(e){return{result:{role:'tool',tool_call_id:id,content:'[错误] 工具参数解析失败，请检查参数格式'}};}
     const handler=this.handlers[name];
     if(!handler)return{result:{role:'tool',tool_call_id:id,content:'[错误] 未注册的工具: '+name+', 请使用可用工具'}};
-    // 去重检测（基于上一轮调用，非本轮）
-    if(lastToolCallsForDedup&&isDuplicateCall([call],lastToolCallsForDedup)){
+    // 去重检测（基于上一轮调用，非本轮）；对只读工具放宽，允许重读文件/重搜等合理重复
+    const READ_ONLY_TOOLS=['read','web_search','web_fetch','vision_recognition'];
+    if(lastToolCallsForDedup&&!READ_ONLY_TOOLS.includes(name)&&isDuplicateCall([call],lastToolCallsForDedup)){
       addStepMessage('⚠️ 检测到重复工具调用: '+name);
       return{result:{role:'tool',tool_call_id:id,content:'[提示] 你刚刚执行过相似的重复操作('+name+')。请基于已有结果继续，如确实需要再次调用请说明理由。'}};
     }
-    addStepMessage('调用工具: '+name+'('+JSON.stringify(args).slice(0,60)+'...)');
+    let argsPreview;try{argsPreview=JSON.stringify(args).slice(0,60);}catch(e){argsPreview='[unserializable]';}
+    addStepMessage('调用工具: '+name+'('+argsPreview+'...)');
     try{
       const res=await handler(args,{sessionId,toolCall:call,messages});
       if(res&&res.awaitUserResponse){
@@ -2368,11 +2759,23 @@ class EnhancedToolExecutor{
         return{result:{role:'tool',tool_call_id:id,content:JSON.stringify({question:args.question,options:args.options}),_awaitUser:true},_awaitUser:true};
       }
       const content=typeof res==='string'?res:JSON.stringify(res);
-      this.toolFailCounts[name]=0;
+      // 软失败（返回错误字符串而非抛异常）也计入失败计数，避免图片/音乐等工具持续返回失败串却永不触发 earlyBreak
+      if(typeof content==='string'&&isToolErrorContent(content)){
+        this.toolFailCounts[name]=(this.toolFailCounts[name]||0)+1;
+        const fc=this.toolFailCounts[name];
+        addStepMessage('⚠️ 工具 '+name+' 返回错误 (连续'+fc+'次)');
+        if(fc>=3){addStepMessage('⏹ 工具 '+name+' 连续返回错误 '+fc+' 次，终止循环');
+          const truncated0=this.smartTruncate(content);
+          return{result:{role:'tool',tool_call_id:id,content:truncated0},_earlyBreak:true};
+        }
+      }else{
+        this.toolFailCounts[name]=0;
+      }
       const truncated=this.smartTruncate(content);
       let showImage=false;
-      try{const parsed=JSON.parse(content);if(Array.isArray(parsed)&&parsed.length>0&&typeof parsed[0]==='string'&&parsed[0].match(/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i)){addAgentMessage('',name);parsed.forEach(url=>addImageMessage(url));showImage=true;}}catch(e){}
-      if(!showImage&&typeof content==='string'&&content.match(/^https?:\/\/.+\.(jpe?g|png|gif|webp|bmp)(\?|$)/i)){addAgentMessage('',name);addImageMessage(content);showImage=true;}
+      const IMG_EXT_RE=/\.(jpe?g|png|gif|webp|bmp|svg|tiff?|avif)(\?|$)/i;
+      try{const parsed=JSON.parse(content);if(Array.isArray(parsed)&&parsed.length>0&&typeof parsed[0]==='string'&&parsed[0].match(IMG_EXT_RE)){addAgentMessage('',name);parsed.forEach(url=>addImageMessage(url));showImage=true;}}catch(e){}
+      if(!showImage&&typeof content==='string'&&content.match(/^https?:\/\/.+\/[^/]+\.(jpe?g|png|gif|webp|bmp|svg|tiff?|avif)(\?|$)/i)){addAgentMessage('',name);addImageMessage(content);showImage=true;}
       if(!showImage){addAgentMessage('工具 '+name+' 返回结果',name);}
       return{result:{role:'tool',tool_call_id:id,content:truncated}};
     }catch(e){
@@ -2396,18 +2799,18 @@ class EnhancedToolExecutor{
   }
   // 并行执行：write/edit 先行串行，其余并行
   async executeToolCallsParallel(sessionId,toolCalls,messages,lastToolCallsForDedup){
-    const FILE_MODIFY=['write','edit'];const results=[];
+    const FILE_MODIFY=['write','edit','bash'];const MAX_CONCURRENT=4;const results=[];
     const fileCalls=toolCalls.filter(tc=>FILE_MODIFY.includes(tc.function.name));
     const otherCalls=toolCalls.filter(tc=>!FILE_MODIFY.includes(tc.function.name));
-    // 串行：文件修改工具（避免读写冲突）
+    // 串行：文件修改工具及 bash（避免读写冲突）
     for(const tc of fileCalls){
       const wr=await this._execSingleTool(sessionId,tc,messages,lastToolCallsForDedup);
       results.push(wr.result);if(wr._awaitUser)return{results,awaitingUser:true};if(wr._earlyBreak)return{results,earlyBreak:true};
     }
-    // 并行：其余工具
+    // 并行：其余工具（限制并发上限，避免触发外部 API 限流）
     let hasAwaitUser=false;let hasEarlyBreak=false;
     if(otherCalls.length>0){
-      const settled=await Promise.allSettled(otherCalls.map(tc=>this._execSingleTool(sessionId,tc,messages,lastToolCallsForDedup)));
+      const settled=await this._execBatch(otherCalls,sessionId,messages,lastToolCallsForDedup,MAX_CONCURRENT);
       for(const s of settled){
         if(s.status==='fulfilled'){const wr=s.value;results.push(wr.result);if(wr._awaitUser)hasAwaitUser=true;if(wr._earlyBreak)hasEarlyBreak=true;}
         else if(s.reason?.name!=='AbortError')results.push({role:'tool',tool_call_id:'unknown',content:'[错误] 工具执行异常: '+(s.reason?.message||'未知')});
@@ -2418,6 +2821,18 @@ class EnhancedToolExecutor{
     results.sort((a,b)=>(orderMap.get(a.tool_call_id)??99)-(orderMap.get(b.tool_call_id)??99));
     if(hasAwaitUser)return{results,awaitingUser:true};if(hasEarlyBreak)return{results,earlyBreak:true};
     return{results,awaitingUser:false,earlyBreak:false};
+  }
+  // 分批并行执行（控制并发数，避免一次性发起过多外部请求）
+  async _execBatch(calls,sessionId,messages,lastToolCallsForDedup,concurrency){
+    const results=[];
+    const conc=Math.max(1,Number(concurrency)||1);
+    for(let i=0;i<calls.length;i+=conc){
+      if(stopRequested)break;
+      const batch=calls.slice(i,i+conc);
+      const settled=await Promise.allSettled(batch.map(tc=>this._execSingleTool(sessionId,tc,messages,lastToolCallsForDedup)));
+      results.push(...settled);
+    }
+    return results;
   }
 }
 
@@ -2438,11 +2853,20 @@ function isDuplicateCall(current,previous){
   }
   return false;
 }
+// 判断工具返回内容是否为错误结果（覆盖各工具的错误返回格式）
+function isToolErrorContent(content){
+  if(typeof content!=='string')return false;
+  // 必须 anchored 到开头：避免 read/web_fetch/web_search 返回的正常内容里
+  // 碰巧含"出错: ""失败（""暂时不可用"等字眼被误判为工具失败
+  return content.startsWith('[错误]')||content.startsWith('[提示]')||
+    /^(搜索|图像识别|图片生成|视频生成|音乐生成|语音生成|bash 执行|读取|写入|编辑|抓取)(出错|失败)/.test(content)||
+    /^(网络搜索失败|抓取失败|抓取出错|bash 执行失败|MUD命令错误|MUD命令执行失败|MUD初始化失败)/.test(content);
+}
 
 // ── 媒体文件自动保存到用户或访客文件夹 ──
-async function saveMediaToUser(url,folder,ext){
+async function saveMediaToUser(url,folder){
   try{
-    const res=await apiCall('file_save_from_url',{url:url,folder:folder});
+    const res=await apiCall('file_save_from_url',{url:url,folder:folder},{timeout:120});
     if(!res.success||!res.file){addStepMessage('⚠️ 文件保存失败: '+(res.error||'未知错误'));return null;}
     if(currentUser)fetchQuota();
     return res.file;
@@ -2453,13 +2877,16 @@ async function saveMediaToUser(url,folder,ext){
 async function getShareUrl(filePath){
   if(!filePath)return null;
   try{
+    const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),30000);
     const resp=await fetch(PROXY_URL,{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({_action:'generate_share_link',file_path:filePath,_token:accessToken})
+      body:JSON.stringify({_action:'generate_share_link',file_path:filePath,_token:accessToken}),
+      signal:ctrl.signal
     });
+    clearTimeout(timer);
     const d=await resp.json();
     return d.share_url||null;
-  }catch(e){return null;}
+  }catch(e){if(e.name==='AbortError')addStepMessage('⚠️ 获取分享链接超时');return null;}
 }
 
 // ── 系统提示词 ──
@@ -2467,9 +2894,9 @@ function buildSystemPrompt(){
   const username=currentUser?currentUser.username:'访客';
   let prompt;
   if(currentUser){
-    prompt='You are an interactive CLI tool...当前登录用户: '+username+'\n用户拥有 '+(username==='admin'?'1GB':'100MB')+' 的存储配额。\n\n## 文件目录存放规则（请严格遵守）\n沙箱内包含以下子目录，各类文件建议存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 project/项目名/ |\n| tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出 |\n| files/ | 📄 通用文档 | 笔记、配置、通用文本 |\n| images/ | 🖼 图片 | 系统自动保存（image_generation 生成的图片），无需手动指定 |\n| videos/ | 🎬 视频 | 系统自动保存（video_generation 生成的视频），无需手动指定 |\n| music/ | 🎵 音乐 | 系统自动保存（music_generation 生成的音乐），无需手动指定 |\n| voice/ | 🎤 语音 | 系统自动保存（text_to_speech 生成的语音），无需手动指定 |\n| memory/ | 🧠 记忆数据 | 记忆系统专用，请勿手动修改 |\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取沙箱内的文件\n- write: 写入沙箱内的文件\n- edit: 编辑沙箱内的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容（参数: url=目标网址, max_chars=最大字符数默认50000）\n- mud_action: MUD游戏引擎命令（MUD模式下使用）\n- bash: 在浏览器沙箱中执行文件操作命令。仅支持以下51个命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持其他任何命令（如less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等）。不支持运行脚本或网络请求\n\n沙箱内所有目录和文件可自由读写，无路径限制。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL;
+    prompt='You are an interactive CLI tool...当前登录用户: '+username+'\n用户拥有 '+(username==='admin'?'1GB':'100MB')+' 的存储配额。\n\n## 文件目录存放规则（请严格遵守）\n沙箱内包含以下子目录，各类文件建议存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 project/项目名/ |\n| tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出 |\n| files/ | 📄 通用文档 | 笔记、配置、通用文本 |\n| images/ | 🖼 图片 | 系统自动保存（image_generation 生成的图片），无需手动指定 |\n| videos/ | 🎬 视频 | 系统自动保存（video_generation 生成的视频），无需手动指定 |\n| music/ | 🎵 音乐 | 系统自动保存（music_generation 生成的音乐），无需手动指定 |\n| voice/ | 🎤 语音 | 系统自动保存（text_to_speech 生成的语音），无需手动指定 |\n| memory/ | 🧠 记忆数据 | 记忆系统专用，请勿手动修改 |\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取沙箱内的文件\n- write: 写入沙箱内的文件\n- edit: 编辑沙箱内的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容（参数: url=目标网址, max_chars=最大字符数默认50000）\n- mud_action: MUD游戏引擎命令（MUD模式下使用）\n- bash: 在浏览器沙箱中执行文件操作命令。仅支持以下50个命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持其他任何命令（如less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等）。不支持运行脚本或网络请求\n\n沙箱内所有目录和文件可自由读写，无路径限制。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL;
   }else{
-    prompt='You are an interactive CLI tool...当前用户: 访客 (未登录)\n\n## 文件目录存放规则（请严格遵守）\n沙箱内包含以下子目录，各类文件建议存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 project/项目名/ |\n| tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出 |\n| files/ | 📄 通用文档 | 笔记、配置、通用文本 |\n| images/ | 🖼 图片 | 自动保存 |\n| videos/ | 🎬 视频 | 自动保存 |\n| music/ | 🎵 音乐 | 自动保存 |\n| voice/ | 🎤 语音 | 自动保存 |\n| memory/ | 🧠 记忆数据 | 记忆系统专用（访客模式不可用） |\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取沙箱内的文件\n- write: 写入沙箱内的文件\n- edit: 编辑沙箱内的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容\n- mud_action: MUD游戏引擎命令（MUD模式下使用）\n- bash: 在浏览器沙箱中执行文件操作命令。仅支持以下51个命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持其他任何命令（如less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等）。不支持运行脚本或网络请求\n\n沙箱内所有目录和文件可自由读写，无路径限制。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL;
+    prompt='You are an interactive CLI tool...当前用户: 访客 (未登录)\n\n## 文件目录存放规则（请严格遵守）\n沙箱内包含以下子目录，各类文件建议存放到对应目录：\n\n| 目录 | 用途 | 存放内容 |\n|------|------|----------|\n| project/ | 🗂 项目文件 | 每个项目一个独立子文件夹 project/项目名/ |\n| tmp/ | 📦 临时文件 | 中间结果、调试日志、一次性输出 |\n| files/ | 📄 通用文档 | 笔记、配置、通用文本 |\n| images/ | 🖼 图片 | 自动保存 |\n| videos/ | 🎬 视频 | 自动保存 |\n| music/ | 🎵 音乐 | 自动保存 |\n| voice/ | 🎤 语音 | 自动保存 |\n| memory/ | 🧠 记忆数据 | 记忆系统专用（访客模式不可用） |\n\n你可以使用以下工具：\n- web_search: 搜索互联网\n- vision_recognition: 识别图片\n- image_generation: 生成图片\n- video_generation: 生成视频\n- music_generation: 生成音乐\n- text_to_speech: 将文本转为语音\n- read: 读取沙箱内的文件\n- write: 写入沙箱内的文件\n- edit: 编辑沙箱内的文件（优先使用）\n- AskUserQuestion: 当不确定时向用户提问\n- web_fetch: 抓取外部网页内容\n- mud_action: MUD游戏引擎命令（MUD模式下使用）\n- bash: 在浏览器沙箱中执行文件操作命令。仅支持以下50个命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持其他任何命令（如less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等）。不支持运行脚本或网络请求\n\n沙箱内所有目录和文件可自由读写，无路径限制。\n\n'+EDIT_PRIORITY_PROMPT+'\n\n'+AGENT_DRIFT_GUARD_SKILL;
   }
 
 // ── MUD 模式动态提示 ──
@@ -2528,6 +2955,15 @@ prompt+='## 工具调用规则\n';
 
 // ── Agent Loop ──
 async function runAgentLoop(userMessage){
+  // 防御：入口立即设置运行态与 abortController，避免机械命令等待 apiCall 期间 isRunning=false 触发并发 runAgentLoop 破坏 shared state
+  if(abortController)abortController.abort();
+  abortController=new AbortController();
+  stopRequested=false;
+  setRunning(true);
+  // 防御：清空上一轮可能残留的 pending media，避免跨会话/中断后泄漏显示
+  _mudPendingImage=null;_mudPendingVoice=null;
+  // 防御：拒绝空 userMessage（即便发送按钮已 trim，processQueue 间接路径也需保护）
+  if(!userMessage||typeof userMessage!=='string'||!userMessage.trim()){setRunning(false);return;}
   // ── MUD 命令拦截：仅拦截纯机械命令（save/load/开关），叙事输入和needs_narration交给LLM ──
   const trimmed=userMessage.trim();
   const lower=trimmed.toLowerCase();
@@ -2609,7 +3045,9 @@ async function runAgentLoop(userMessage){
           _loadSuccess=true;
           addStepMessage('📂 剧本《'+_activeMudScenario+'》已从云端恢复');
         }else if(await _ensureFS()){
-        const slug=_mudScenarioSlug();
+        let slug=_mudScenarioSlug();
+        // 与 save 路径一致：slug 为空或含斜杠时回退为 default，避免跨目录读取
+        if(!slug||slug.includes('/')){slug='default';_activeMudScenario='default';}
         try{
           const dh=await _fileSystem.getDirHandle(_fileSystem.resolvePath('mud'));
           // 优先读当前剧本子目录
@@ -2639,7 +3077,9 @@ async function runAgentLoop(userMessage){
               if(sd.messages&&sd.messages.length>0){currentSession.messages=sd.messages;_loadSuccess=true;}
               if(sd.mudState){_mudState=sd.mudState;_mudScenarioSlug();}
               if(sd.scenario&&sd.scenario!==_activeMudScenario)addStepMessage('📂 注意：存档剧本《'+sd.scenario+'》与当前剧本《'+_activeMudScenario+'》不同');
-              addStepMessage('📂 剧本《'+slug+'》已恢复: '+(dir?dir+'/':'')+saves[0]);
+              // 用 _mudScenarioSlug() 重算后的当前剧本名而非旧 slug，避免跨剧本读档提示错名
+              const curSlug=_mudScenarioSlug()||_activeMudScenario||slug;
+              addStepMessage('📂 剧本《'+curSlug+'》已恢复: '+(dir?dir+'/':'')+saves[0]);
             }
           }
         }catch(e){addStepMessage('⚠️ 没有找到存档文件');}
@@ -2705,10 +3145,15 @@ async function runAgentLoop(userMessage){
   }
   const MAX_LOOPS=500;let loopCount=0;let consecutiveFailures=0;lastToolCalls=null;executor.toolFailCounts={};
   const recentToolHashes=[];const recentResponses=[];const MAX_HISTORY=5;
+  let consecutiveReadBash=0;const READBASH_STREAK_LIMIT=8;
+  const MAX_TOTAL_RUNTIME=1800000;const loopStartTime=Date.now();const RUNTIME_WARN_AT=1500000;let runtimeWarned=false;
   try{
   while(loopCount<MAX_LOOPS){
     loopCount++;
     if(stopRequested){addStepMessage('⏹ 已停止');break;}
+    const elapsed=Date.now()-loopStartTime;
+    if(elapsed>MAX_TOTAL_RUNTIME){addAgentMessage('⚠️ 任务已运行 '+Math.round(elapsed/60000)+' 分钟，达到时间上限，自动停止。请尝试拆分任务。');break;}
+    if(!runtimeWarned&&elapsed>RUNTIME_WARN_AT){addStepMessage('⚠️ 任务已运行 '+Math.round(elapsed/60000)+' 分钟，接近时间上限 ('+Math.round(MAX_TOTAL_RUNTIME/60000)+'分钟)');runtimeWarned=true;}
     if(loopCount===450){addStepMessage('⚠️ 已循环 450 轮，接近上限 ('+MAX_LOOPS+')，请考虑简化任务');}
 // Agent loop 模型（从设置页读取，可在运行中切换）
 const activeProvider=CHAT_PROVIDER;
@@ -2718,11 +3163,12 @@ const activeModel=CHAT_MODEL;
     addStepMessage('Agent 循环 #'+loopCount+'：正在调用 '+activeModel+'...');
     const lastMsg=messages[messages.length-1]?.content||'';
     const hasComplexNeed=mudActive||(typeof lastMsg==='string'&&(lastMsg.length>80||/error|debug|fix|bug|refactor|optimize|架构|设计模式|并发|性能|重构|优化/.test(lastMsg)));
-    const thinkingOpts=ThinkingModeHandler.buildThinkingOptions(true,hasComplexNeed?'max':'low');
-    // 消息压缩：超过 50 条消息 或 总字符超过 500K 时触发（适配 100 万 token 上下文）
+    // 仅当当前模型支持 thinking 时才传该参数，否则后端可能因未知参数返回 400
+    const thinkingOpts=ThinkingModeHandler.supportsThinking(activeModel)?ThinkingModeHandler.buildThinkingOptions(true,hasComplexNeed?'max':'low'):{};
+    // 消息压缩：消息条数 >100 且 总字符超 500K 时触发（避免短消息被误压缩，适配 100 万 token 上下文）
     if(!mudActive){
       const totalChars=messages.reduce((s,m)=>s+(typeof m.content==='string'?m.content.length:0),0);
-      if(messages.length>50||totalChars>500000){
+      if(messages.length>100||totalChars>500000){
         addStepMessage('上下文过长 ('+Math.round(totalChars/1000)+'K, '+messages.length+'条)，压缩中...');
         // 第一步：截断单个超长工具结果（防止单条消息过大）
         for(let i=0;i<messages.length;i++){
@@ -2736,16 +3182,16 @@ const activeModel=CHAT_MODEL;
         // 第二步：滑动窗口压缩（保持 tool_calls + tool 响应的完整性）
         const systemMsg=messages.find(m=>m.role==='system')||messages[0];
         const nonSystem=messages.filter(m=>m!==systemMsg);
-        const recent=nonSystem.slice(-10);
-        const older=nonSystem.slice(0,-10);
-        if(older.length>5){
+        const recent=nonSystem.slice(-20);
+        const older=nonSystem.slice(0,-20);
+        if(older.length>10){
           const keepMsgs=new Set();
           for(const m of older){
             if(m.role==='user'||(m.role==='assistant'&&(m.content||m.tool_calls))){
               keepMsgs.add(m);
             }
           }
-          const keepArr=[...keepMsgs].slice(-5);
+          const keepArr=[...keepMsgs].slice(-10);
           const finalKeep=new Set(keepArr);
           for(const m of older){
             if(m.role==='tool'&&m.tool_call_id){
@@ -2767,7 +3213,7 @@ const activeModel=CHAT_MODEL;
     let llmResponse;
     // LLM 调用重试：最多 5 次，指数退避（2s→4s→8s→16s→32s），应对网络波动和限流
     for(let llmRetry=0;llmRetry<5;llmRetry++){
-      try{llmResponse=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts});break;}
+      try{llmResponse=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts},600000);break;}
       catch(e){
         if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
         const errDetail=e.message||'未知错误';
@@ -2787,8 +3233,8 @@ const activeModel=CHAT_MODEL;
     let fullReasoning=message.reasoning_content||'';
     let continueCount=0;
     const MAX_CONTINUE=10;
-    const MAX_TOTAL_CHARS=4000000;
-    const CONTINUE_TIMEOUT=300000;
+    const MAX_TOTAL_CHARS=1000000;
+    const CONTINUE_TIMEOUT=180000;
     let emptyStreak=0;
     const continueStart=Date.now();
     const sentenceEnds=new Set(['，','。','！','？','；','：','、','…','.','!','?',',',';',':','\n','）',')','」','』','》','}','>','`']);
@@ -2820,10 +3266,11 @@ const activeModel=CHAT_MODEL;
       if(Date.now()-continueStart>CONTINUE_TIMEOUT){addStepMessage('⚠️ 续写超时 ('+Math.round(CONTINUE_TIMEOUT/1000)+'s)，停止续写');break;}
       continueCount++;
       addStepMessage('⚠️ 响应被截断，自动续写中 ('+continueCount+'/'+MAX_CONTINUE+')，当前 '+Math.round(fullContent.length/1000)+'K 字符...');
-      messages.push({role:'assistant',content:fullContent});
+      // 续写用临时上下文避免污染主 messages（否则循环结束时会重复 push assistant）
+      const continueCtx=[...messages,{role:'assistant',content:fullContent},{role:'user',content:'请继续上面的内容，不要重复已输出的部分。直接续写，不要总结。'}];
       let continueResp;
       for(let llmRetry=0;llmRetry<5;llmRetry++){
-        try{continueResp=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:[...messages,{role:'user',content:'请继续上面的内容，不要重复已输出的部分。直接续写，不要总结。'}],tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts});break;}
+        try{continueResp=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:continueCtx,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts},600000);break;}
         catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
           if(llmRetry>=4){addAgentMessage('❌ 续写失败（已重试5次）: '+e.message);setRunning(false);return;}
           const d=Math.min(2000*Math.pow(2,llmRetry),32000);
@@ -2897,8 +3344,13 @@ const activeModel=CHAT_MODEL;
     }
     const toolCalls=message.tool_calls;
     addStepMessage('模型请求调用 '+toolCalls.length+' 个工具'+(toolCalls.length>1?'（并行执行）':''));
-    // 死循环检测：检查工具调用是否重复
-    const toolHash=toolCalls.map(t=>t.function?.name+':'+t.function?.arguments?.slice(0,100)).join('|');
+    // 死循环检测：检查工具调用是否重复（write/edit 等大参数工具用长度签名避免误判）
+    const toolHash=toolCalls.map(t=>{
+      const args=t.function?.arguments||'';
+      const name=t.function?.name||'';
+      if(['write','edit','bash'].includes(name))return name+':len='+args.length+':tail='+args.slice(-80);
+      return name+':'+args.slice(0,100);
+    }).join('|');
     recentToolHashes.push(toolHash);
     if(recentToolHashes.length>MAX_HISTORY)recentToolHashes.shift();
     const duplicateToolCount=recentToolHashes.filter(h=>h===toolHash).length;
@@ -2907,11 +3359,11 @@ const activeModel=CHAT_MODEL;
       addAgentMessage('⚠️ 检测到重复操作，已自动停止。请尝试不同的方式或明确指示。');
       break;
     }
-    // 死循环检测：检查是否连续多轮只调用 read/bash 而不产出内容
-    const recentToolNames=recentToolHashes.map(h=>h.split(':')[0]);
-    const readBashOnly=recentToolNames.filter(n=>n==='read'||n==='bash').length;
-    if(readBashOnly>=8){
-      addStepMessage('⚠️ 连续多轮只调用 read/bash 工具，可能陷入无效循环，自动跳出');
+    // 死循环检测：检查是否连续多轮只调用 read/bash 而不产出内容（独立计数器，不受 MAX_HISTORY 截断影响）
+    const allReadBash=toolCalls.every(t=>t.function?.name==='read'||t.function?.name==='bash');
+    if(allReadBash){consecutiveReadBash++;}else{consecutiveReadBash=0;}
+    if(consecutiveReadBash>=READBASH_STREAK_LIMIT){
+      addStepMessage('⚠️ 连续 '+consecutiveReadBash+' 轮只调用 read/bash 工具，可能陷入无效循环，自动跳出');
       addAgentMessage('⚠️ 检测到无效循环（连续多轮只读取文件），已自动停止。请尝试直接执行操作。');
       break;
     }
@@ -2920,7 +3372,17 @@ const activeModel=CHAT_MODEL;
     lastToolCalls=message.tool_calls;
     if(stopRequested){addStepMessage('⏹ 已停止');break;}
     if(earlyBreak){messages.push(...results);addAgentMessage('工具执行失败次数过多，已停止。');break;}
-    if(awaitingUser){messages.push(...results.filter(r=>!r._awaitUser));currentSession.messages=messages;currentSession.awaitingUser=true;currentSession.pendingToolCallId=toolCalls[0]?.id;addStepMessage('等待用户回答...');setRunning(false);return;}
+    if(awaitingUser){
+      // 用 AskUserQuestion 对应的 tool_call_id（而非固定的 toolCalls[0]）配对用户回答
+      const askIdx=toolCalls.findIndex(t=>t.function?.name==='AskUserQuestion');
+      const askId=askIdx>=0?toolCalls[askIdx].id:toolCalls[0]?.id;
+      messages.push(...results.filter(r=>!r._awaitUser));
+      currentSession.messages=messages;currentSession.awaitingUser=true;currentSession.pendingToolCallId=askId;
+      addStepMessage('等待用户回答...');setRunning(false);
+      // awaitingUser 期间清空队列：用户下条输入应为 AskUser 的答案，而非排队的旧命令
+      if(commandQueue.length>0){addStepMessage('⏭ 丢弃 '+commandQueue.length+' 个排队命令（等待用户回答优先）');commandQueue.length=0;}
+      return;
+    }
     // 死循环检测：检查响应内容是否重复
     const responseHash=(message.content||'').slice(0,200);
     if(responseHash){
@@ -2933,8 +3395,8 @@ const activeModel=CHAT_MODEL;
         break;
       }
     }
-    // 检查本轮工具是否全部失败
-    const allFailed=results.length>0&&results.every(r=>typeof r.content==='string'&&(r.content.startsWith('[错误]')));
+    // 检查本轮工具是否全部失败（覆盖各工具的错误返回格式，而非仅 '[错误]' 前缀）
+    const allFailed=results.length>0&&results.every(r=>isToolErrorContent(r.content));
     if(allFailed&&toolCalls.length>0){consecutiveFailures++;addStepMessage('⚠️ 本轮 '+toolCalls.length+' 个工具全部执行失败（连续 '+consecutiveFailures+' 轮）');if(consecutiveFailures>=2){addAgentMessage('工具连续执行失败，已停止。');break;}}else{consecutiveFailures=0;}
     messages.push(...results);
   }
@@ -2944,12 +3406,11 @@ const activeModel=CHAT_MODEL;
   if(mudActive&&_mudPendingVoice){const voiceUrl=_mudPendingVoice;_mudPendingVoice=null;addAgentMessage('🔊 [语音]('+voiceUrl+')');}
   }catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');}else{addAgentMessage('❌ 错误: '+e.message);}}
   // ── 对话结束后异步触发记忆提取（仅增量，深拷贝防竞争）──
-  if(currentUser&&recentConversationMessages.length>=2&&!memoryExtractionPending){
+  if(currentUser&&recentConversationMessages.length>=2){
     const newMsgs=getUnprocessedMessages();
     if(newMsgs.length>=2){
-      memoryExtractionPending=true;
       const snapshot=newMsgs.map(m=>({...m,time:m.time}));
-      triggerMemoryExtraction(snapshot).finally(()=>{memoryExtractionPending=false;});
+      triggerMemoryExtraction(snapshot); // 内部自带 memoryExtractionPending guard
     }
   }
   setRunning(false);currentSession.messages=messages;currentSession.awaitingUser=false;abortController=null;
@@ -3005,7 +3466,7 @@ function renderFileList(files,currentPath){
     html+='<div class="fm-item'+(f.is_dir?' fm-item-dir':' fm-item-file')+'" data-path="'+escapeHtmlAttr(f.path)+'">'
       +'<span class="fm-item-icon">'+icon+'</span>'
       +'<span class="fm-item-name" data-path="'+escapeHtmlAttr(f.path)+'">'+escapeHtml(f.name)+'</span>'
-      +'<span class="fm-item-size">'+sizeStr+'</span>'
+      +'<span class="fm-item-size">'+escapeHtml(sizeStr)+'</span>'
       +'<span class="fm-item-mtime">'+escapeHtml(f.mtime||'')+'</span>'
       +'<span class="fm-item-actions">'
       +(f.is_dir?'':'<button class="fm-item-action share fm-action-share" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="分享链接">🔗</button>')+(f.is_dir&&!currentPath&&['files','images','music','videos','voice','project','memory','tmp','mud'].includes(f.name)?'':'<button class="fm-item-action del fm-action-delete" data-path="'+escapeHtmlAttr(f.path)+'" data-name="'+escapeHtmlAttr(f.name)+'" title="删除">🗑️</button>')
@@ -3022,6 +3483,7 @@ function renderQuota(usedBytes,quotaMB){
 }
 function roundByteToMB(bytes){return (bytes/(1024*1024)).toFixed(1);}
 function formatSize(bytes){
+  if(typeof bytes!=='number'||isNaN(bytes))return '-';
   if(bytes===0) return '0B';
   if(bytes<1024) return bytes+'B';
   if(bytes<1024*1024) return (bytes/1024).toFixed(1)+'KB';
@@ -3285,9 +3747,11 @@ modalPassword.addEventListener('keypress',(e)=>{if(e.key==='Enter')handleAuth();
 sendBtn.addEventListener('click',()=>{
   const text=userInput.value.trim();
   if(!text)return;
+  if(text.length>50000){addStepMessage('⚠️ 输入过长（'+text.length+' 字符，上限 50000），请精简或分段');return;}
   userInput.value='';autoResizeInput();stopRequested=false;
   if(isRunning){
-    // 运行中：入队等待
+    // 运行中：入队等待（限制队列上限，防止用户 spam 堆积）
+    if(commandQueue.length>=20){addStepMessage('⚠️ 命令队列已满（20 条），请等待当前任务完成');return;}
     commandQueue.push(text);
     addStepMessage('⏳ 已加入命令队列（队列：'+commandQueue.length+' 条）');
     return;
@@ -3304,7 +3768,10 @@ sendBtn.addEventListener('dblclick',()=>{  // 双击停止：中止+清空队列
     addStepMessage('⏹ 已停止并清空队列');
   }
 });
-userInput.addEventListener('keypress',(e)=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendBtn.click();}});
+// 用 keydown 替代已废弃的 keypress；并加 isComposing 防止中文 IME 组字回车被误发送
+userInput.addEventListener('keydown',(e)=>{
+  if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!(e.keyCode===229)){e.preventDefault();sendBtn.click();}
+});
 userInput.addEventListener('input',autoResizeInput);
 function autoResizeInput(){
   const el=userInput;
@@ -3414,7 +3881,7 @@ async function shareCurrentImage(){
 
 // ── 会话结束：关闭页面或退出时触发记忆提取 ──
 window.addEventListener('beforeunload',function(){
-  if(currentUser&&recentConversationMessages.length>=2){
+  if(currentUser&&accessToken&&recentConversationMessages.length>=2){
     const remainingMsgs=getUnprocessedMessages();
     if(remainingMsgs.length>=2){
       navigator.sendBeacon(PROXY_URL,JSON.stringify({
