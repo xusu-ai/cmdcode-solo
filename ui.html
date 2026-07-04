@@ -396,8 +396,13 @@ const PROVIDER_MODELS={
     {value:'qwen3.7-plus',label:'Qwen3.7 Plus'},
   ],
   'minimax':[
+    {value:'MiniMax-M3',label:'MiniMax-M3 (原生多模态)'},
     {value:'MiniMax-M2.7',label:'MiniMax-M2.7'},
-    {value:'MiniMax-M3',label:'MiniMax-M3'},
+    {value:'MiniMax-VL-01',label:'MiniMax-VL-01 (图像理解)'},
+    {value:'image-01',label:'image-01 (图像生成)'},
+    {value:'music-2.6',label:'music-2.6 (音乐生成)'},
+    {value:'speech-2.8-hd',label:'speech-2.8-hd (语音合成)'},
+    {value:'MiniMax-Hailuo-2.3',label:'MiniMax-Hailuo-2.3 (视频生成)'},
   ],
 };
 const PROVIDER_INFO={
@@ -413,7 +418,7 @@ let CHAT_MODEL=localStorage.getItem('cmdcode_model')||'deepseek-v4-flash';
 let MM_PROVIDER=localStorage.getItem('cmdcode_mm_provider')||'minimax';
 // minimax 系列已扩展到 minimax/minimax1/minimax2 三个供应商；其他遗留值归一为 minimax
 if(MM_PROVIDER!=='minimax'&&MM_PROVIDER!=='minimax1'&&MM_PROVIDER!=='minimax2'){MM_PROVIDER='minimax';localStorage.setItem('cmdcode_mm_provider','minimax');}
-let MM_MODEL=localStorage.getItem('cmdcode_mm_model')||'MiniMax-M2.7';
+let MM_MODEL=localStorage.getItem('cmdcode_mm_model')||'MiniMax-M3';
 let accessToken='';  // 从服务器端获取，不硬编码在前端
 let isRunning=false;
 let abortController=null;
@@ -944,10 +949,24 @@ const EDIT_PRIORITY_PROMPT='\n## File Modification Strategy\n- **Prefer \'edit\'
 const ALL_TOOLS=[
   {type:'function',function:{name:'web_search',description:'搜索互联网，返回结构化结果列表。',parameters:{type:'object',properties:{query:{type:'string',description:'搜索关键词'}},required:['query']}}},
   {type:'function',function:{name:'vision_recognition',description:'识别图片内容，回答关于图片的问题。',parameters:{type:'object',properties:{image_url:{type:'string',description:'图片URL'},question:{type:'string',description:'要询问的问题'}},required:['image_url']}}},
-  {type:'function',function:{name:'image_generation',description:'根据文字描述生成图片，返回图片URL列表。支持自定义分辨率、种子、参考图等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3','3:4','3:2','2:3'],default:'1:1'},n:{type:'integer',description:'生成数量1-9',default:1,minimum:1,maximum:9},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
+  {type:'function',function:{name:'image_generation',description:'文生图或图生图。文生图：根据文字描述生成图片。图生图：提供参考人物照片，生成该人物的变体图片（需单人正面照）。返回图片URL列表。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述（最长1500字符）'},subject_image:{type:'string',description:'参考人物照片URL（图生图模式）'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3','3:4','3:2','2:3','21:9'],default:'1:1'},n:{type:'integer',description:'生成数量1-9',default:1,minimum:1,maximum:9},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt']}}},
+  {type:'function',function:{name:'image_to_image',description:'图生图：提供参考人物照片URL，生成该人物在不同场景/造型下的新图片。基于 MiniMax subject_reference 实现角色一致性。',parameters:{type:'object',properties:{prompt:{type:'string',description:'画面描述（最长1500字符），如：这个人在海滩散步、这个人在办公室工作'},subject_image:{type:'string',description:'参考人物照片URL（要求单人正面照）'},aspect_ratio:{type:'string',enum:['1:1','16:9','9:16','4:3','3:4','3:2','2:3','21:9'],default:'1:1'},n:{type:'integer',description:'生成数量1-9',default:1,minimum:1,maximum:9},width:{type:'integer',description:'宽度像素（需512-2048，8的倍数，与height同时使用）'},height:{type:'integer',description:'高度像素（需512-2048，8的倍数，与width同时使用）'},seed:{type:'integer',description:'随机种子（固定值可复现相同图片）'},prompt_optimizer:{type:'boolean',description:'是否自动优化提示词',default:false},aigc_watermark:{type:'boolean',description:'是否添加AI生成水印',default:false}},required:['prompt','subject_image']}}},
   {type:'function',function:{name:'video_generation',description:'根据描述生成视频。T2V文生视频(Hailuo-2.3)、I2V图生视频(Hailuo-2.3)、SEF首尾帧插帧(Hailuo-02)、S2V主体参考(S2V-01)。参考 mmx-cli 参数模型。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述'},first_frame_image:{type:'string',description:'首帧图片URL（图生视频I2V模式）'},last_frame_image:{type:'string',description:'尾帧图片URL（与first_frame_image配合→Hailuo-02 SEF插帧）'},subject_image:{type:'string',description:'主体参考图URL（角色一致性→S2V-01模型）'}},required:['prompt']}}},
+  {type:'function',function:{name:'text_to_video',description:'文生视频：根据文字描述生成视频。支持运镜控制、分辨率、时长、水印。默认模型 MiniMax-Hailuo-2.3。',parameters:{type:'object',properties:{prompt:{type:'string',description:'视频描述（最长2000字符）。支持运镜指令 [左移][右移][左摇][右摇][推进][拉远][上升][下降][上摇][下摇][变焦推近][变焦拉远][晃动][跟随][固定]'},duration:{type:'integer',description:'视频时长秒（6或10，默认6）',enum:[6,10],default:6},resolution:{type:'string',description:'分辨率（768P默认；Hailuo-2.3支持768P/1080P）',enum:['768P','1080P'],default:'768P'},prompt_optimizer:{type:'boolean',description:'自动优化prompt',default:true},fast_pretreatment:{type:'boolean',description:'缩短prompt优化耗时',default:false},aigc_watermark:{type:'boolean',description:'添加AI生成水印',default:false}},required:['prompt']}}},
+  {type:'function',function:{name:'image_to_video',description:'图生视频：以图片为起始帧生成视频。支持模型选择、运镜控制、分辨率、时长、水印。',parameters:{type:'object',properties:{first_frame_image:{type:'string',description:'起始帧图片URL（必填，格式JPG/JPEG/PNG/WebP，<20MB，短边>300px）'},prompt:{type:'string',description:'视频运镜描述（最长2000字符）。支持 [左移][右移][左摇][右摇][推进][拉远][上升][下降][上摇][下摇][变焦推近][变焦拉远][晃动][跟随][固定]'},duration:{type:'integer',description:'视频时长秒（6或10，默认6）',enum:[6,10],default:6},resolution:{type:'string',description:'分辨率（768P默认；Hailuo-2.3/02支持512P/768P/1080P，其他720P）',enum:['512P','720P','768P','1080P'],default:'768P'},prompt_optimizer:{type:'boolean',description:'自动优化prompt',default:true},fast_pretreatment:{type:'boolean',description:'缩短prompt优化耗时（仅Hailuo-2.3/02）',default:false},aigc_watermark:{type:'boolean',description:'添加AI生成水印',default:false}},required:['first_frame_image']}}},
+  {type:'function',function:{name:'start_end_to_video',description:'首尾帧生视频：提供起始帧和结束帧图片，生成过渡视频。基于 MiniMax-Hailuo-02 模型的SEF（Start-End-Frame）模式。',parameters:{type:'object',properties:{first_frame_image:{type:'string',description:'起始帧图片URL（可选，格式JPG/JPEG/PNG/WebP，<20MB）'},last_frame_image:{type:'string',description:'结束帧图片URL（必填，格式JPG/JPEG/PNG/WebP，<20MB）'},prompt:{type:'string',description:'视频运镜描述（最长2000字符）。支持 [左移][右移][左摇][右摇][推进][拉远][上升][下降][上摇][下摇][变焦推近][变焦拉远][晃动][跟随][固定]'},duration:{type:'integer',description:'视频时长秒（6或10，6s支持768P/1080P，10s仅768P）',enum:[6,10],default:6},resolution:{type:'string',description:'分辨率（768P默认，1080P仅6s支持）',enum:['768P','1080P'],default:'768P'},prompt_optimizer:{type:'boolean',description:'自动优化prompt',default:true}},required:['last_frame_image']}}},
+  {type:'function',function:{name:'subject_reference_to_video',description:'主体参考生视频：提供人物参考照，生成该人物在指定场景中的视频。基于 S2V-01 模型实现角色一致性。',parameters:{type:'object',properties:{subject_image:{type:'string',description:'人物参考照URL（必填，单人面部照，格式JPG/JPEG/PNG/WebP，<20MB）'},prompt:{type:'string',description:'视频描述（最长2000字符）。描述该人物在什么场景做什么动作'},prompt_optimizer:{type:'boolean',description:'自动优化prompt',default:true},aigc_watermark:{type:'boolean',description:'添加AI生成水印',default:false}},required:['subject_image']}}},
+  {type:'function',function:{name:'query_video_task',description:'查询视频生成任务状态。返回任务状态（Preparing/Queueing/Processing/Success/Fail）、视频文件ID、分辨率等。',parameters:{type:'object',properties:{task_id:{type:'string',description:'视频生成任务ID（可从视频生成工具的响应中获取）'}},required:['task_id']}}},
+  {type:'function',function:{name:'download_video',description:'通过文件ID下载生成的视频。返回视频文件保存路径。文件ID可从 query_video_task 或视频生成工具的返回信息中获取。',parameters:{type:'object',properties:{file_id:{type:'string',description:'视频文件ID（可从 query_video_task 的响应中获取 file_id）'}},required:['file_id']}}},
+  {type:'function',function:{name:'create_video_agent_task',description:'创建视频Agent任务（模板化视频生成）。使用预设模板，传入文本和图片素材，自动生成视频。返回 task_id 用于后续查询状态和下载。',parameters:{type:'object',properties:{template_id:{type:'string',description:'视频模板ID（必需）'},prompt:{type:'string',description:'文本内容（模板中的文本填充）'},media_url:{type:'string',description:'图片素材URL（模板中的媒体填充）'}},required:['template_id']}}},
+  {type:'function',function:{name:'query_video_agent_task',description:'查询视频Agent任务状态。返回任务状态（Preparing/Processing/Success/Fail）、视频下载链接等。',parameters:{type:'object',properties:{task_id:{type:'string',description:'视频Agent任务ID（可从 create_video_agent_task 的响应中获取）'}},required:['task_id']}}},
+  {type:'function',function:{name:'upload_file_to_minimax',description:'上传文件到MiniMax平台。支持：voice_clone(音频克隆)、prompt_audio(音色复刻)、t2a_async_input(长文本合成)、video_understanding(视频理解)。返回file_id用于后续引用。',parameters:{type:'object',properties:{file_path:{type:'string',description:'本地文件路径（沙箱内的文件路径）'},purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async_input','video_understanding'],description:'文件用途'}},required:['file_path','purpose']}}},
+  {type:'function',function:{name:'retrieve_file',description:'检索MiniMax平台上的文件信息。通过 file_id 获取文件元数据：文件名、大小、用途、下载链接等。',parameters:{type:'object',properties:{file_id:{type:'string',description:'文件的唯一标识符（file_id）'}},required:['file_id']}}},
+  {type:'function',function:{name:'retrieve_file_content',description:'下载MiniMax平台上的文件内容（直接返回二进制数据）。通过 file_id 下载文件并保存到本地。',parameters:{type:'object',properties:{file_id:{type:'string',description:'需要下载的文件ID'}},required:['file_id']}}},
+  {type:'function',function:{name:'delete_file',description:'删除MiniMax平台上的已上传文件。需要指定 file_id 和文件用途。',parameters:{type:'object',properties:{file_id:{type:'string',description:'要删除的文件ID'},purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async','t2a_async_input','video_generation'],description:'文件用途'}},required:['file_id','purpose']}}},
+  {type:'function',function:{name:'list_files',description:'列出MiniMax平台上的已上传文件。按用途分类查看，返回文件ID、文件名、大小等。',parameters:{type:'object',properties:{purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async_input'],description:'文件分类'}},required:['purpose']}}},
   {type:'function',function:{name:'music_generation',description:'生成音乐或歌曲，返回音频URL。支持精细控制：曲风、情绪、乐器、速度、调性等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（如：轻快爵士风格，夏天的海边）'},lyrics:{type:'string',description:'歌词（可选，不填则纯音乐）'},instrumental:{type:'boolean',description:'纯音乐（无歌词，与lyrics互斥）',default:false},lyrics_optimizer:{type:'boolean',description:'自动生成歌词（与lyrics/instrumental互斥）',default:false},genre:{type:'string',description:'曲风（如：folk, pop, jazz, rock, classical, electronic, rnb, hiphop）'},mood:{type:'string',description:'情绪/氛围（如：warm, melancholic, uplifting, dark, dreamy）'},vocals:{type:'string',description:'人声风格（如：warm male baritone, bright female soprano）'},instruments:{type:'string',description:'主要乐器（如：acoustic guitar, piano, strings）'},tempo:{type:'string',description:'速度描述（如：fast, slow, moderate）'},bpm:{type:'integer',description:'精确BPM数值（如95, 120）'},key:{type:'string',description:'调性（如：C major, A minor）'}},required:['prompt']}}},
-  {type:'function',function:{name:'text_to_speech',description:'将文本转为语音，返回音频URL。可选音色：female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), male-qn-qingse(青年男声), female-tianmei(甜美)等。',parameters:{type:'object',properties:{text:{type:'string',description:'要读出的文本'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',minimum:0.5,maximum:2.0,default:1.0},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
+  {type:'function',function:{name:'text_to_speech',description:'语音合成(TTS)：将文本转为语音，返回音频文件保存路径。支持情感控制、多音字纠正、字幕生成。默认音色：少女(默认), 御姐, 可爱, 甜美, 青年男声, 少帅, 磁性, 知性, 精品男声, 精品女声。',parameters:{type:'object',properties:{text:{type:'string',description:'要朗读的文本（最长3000字符）'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',description:'语速（0.5-2.0，默认1.0）',minimum:0.5,maximum:2.0,default:1.0},vol:{type:'number',description:'音量（0-2，默认1.0）',minimum:0,maximum:2,default:1.0},pitch:{type:'number',description:'音调（-12到12，默认0）',minimum:-12,maximum:12,default:0},emotion:{type:'string',description:'情感（如：happy, sad, angry, surprised, excited, calm 等）'},pronunciation:{type:'string',description:'多音字纠正，格式：词/(拼音)，多个用分号分隔，如：处理/(chu3)(li3);行/xing'},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
   {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。仅支持以下50个命令，不支持任何其他命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等。禁止在根目录创建文件，必须使用 files/ images/ project/ 等子目录。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令（仅限上述50个）'}},required:['command']}}},
   {type:'function',function:{name:'read',description:'读取文件内容。登录用户访问个人文件夹，访客访问 guest/ 文件夹。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},offset:{type:'integer',description:'起始行号'},limit:{type:'integer',description:'读取行数'}},required:['file_path']}}},
   {type:'function',function:{name:'write',description:'创建或覆盖文件。必须根据内容类型选择路径：图片→images/，音乐/音频→music/，语音→voice/，代码/项目→project/，文档→files/，临时→tmp/，游戏数据→mud/，记忆→memory/。禁止在根目录创建文件。大文件修改优先用 edit 工具。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径。如 images/logo.png、project/calc.py'},content:{type:'string',description:'要写入的内容'}},required:['file_path','content']}}},
@@ -958,7 +977,7 @@ const ALL_TOOLS=[
 ];
 
 // ── Proxy Request ──
-async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
+async function proxyRequest(provider,apiPath,body,timeoutMs=25000){
   if(stopRequested)throw new DOMException('The operation was aborted.','AbortError');
   const requestBody={_token:accessToken,_provider:provider,_path:apiPath,...body};
   const isStream=!!body.stream;
@@ -977,13 +996,25 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
         if(parsed.error==='proxy_all_keys_exhausted'){
           const prov=parsed.detail?.provider||provider;
           const lastErr=parsed.detail?.last_error||'未知';
-          throw new Error('套餐 '+prov+' 的所有 API Key 均失败 ('+lastErr+')。请在设置中切换其他套餐或联系管理员');
+          const errMsg=lastErr.includes('无权限')?'所有密钥均无此功能权限，请更换套餐':('套餐 '+prov+' 的所有 API Key 均失败 ('+lastErr+')');
+          throw new Error(errMsg+'。请在设置中切换其他套餐或联系管理员');
         }
         if(parsed.error==='unknown_provider'){
           throw new Error('未知供应商: '+provider+'。请在设置中重新选择套餐');
         }
         if(parsed.error==='token_invalid'){
           throw new Error('登录令牌已失效，请重新登录');
+        }
+        if(parsed.error==='minimax_auth_failed'){
+          const sc=parsed.minimax_status_code||'';
+          throw new Error(parsed.message||('MiniMax鉴权失败('+sc+')'));
+        }
+        // 检测 MiniMax 内嵌错误（base_resp.status_code）
+        const _br=parsed?.base_resp;
+        if(_br&&_br.status_code&&_br.status_code!==0){
+          const _sc=_br.status_code;
+          if(_sc===1004)throw new Error('MiniMax密钥未授权访问 '+provider+apiPath+'，请在平台开通权限或更换密钥');
+          if(_sc===2049)throw new Error('MiniMax API密钥无效');
         }
         errText=parsed.message||parsed.detail?.last_error||parsed.error||errText;
       }
@@ -2484,58 +2515,95 @@ const toolHandlers={
     return data.choices?.[0]?.message?.content||'无识别结果';
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_visionQuotaExhausted=true;return '图像识别失败，所有 API Key 配额已用尽';}return '图像识别出错: '+e.message;}
   },
-  async image_generation(args,ctx){
+async image_generation(args,ctx){
     if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
     if(!args.prompt||typeof args.prompt!=='string')return '图片生成失败: 缺少 prompt 参数';
-    const VALID_RATIOS=['1:1','16:9','9:16','4:3','3:4','3:2','2:3'];
+    if(args.prompt.length>1500)return '图片生成失败: prompt 过长（'+args.prompt.length+'字符，上限1500）';
+    const VALID_RATIOS=['1:1','16:9','9:16','4:3','3:4','3:2','2:3','21:9'];
     const aspectRatio=args.aspect_ratio&&VALID_RATIOS.includes(args.aspect_ratio)?args.aspect_ratio:'1:1';
     const n=Math.min(Math.max(Number(args.n)||1,1),9);
     if(args.n!==undefined&&(Number(args.n)||0)<1)return '图片生成失败: n 参数必须为正整数（1-9）';
     if(args.aspect_ratio&&!VALID_RATIOS.includes(args.aspect_ratio))addStepMessage('⚠️ aspect_ratio '+args.aspect_ratio+' 非法，已回退为 1:1。合法值: '+VALID_RATIOS.join(', '));
+    const isImageToImage=args.subject_image&&typeof args.subject_image==='string';
+    addStepMessage('🎨 开始生成图片'+(isImageToImage?'（图生图模式）':'...'));
     try{
     const imgBody={model:'image-01',prompt:args.prompt,aspect_ratio:aspectRatio,n:n,response_format:'url'};
+    // 图生图：添加 subject_reference
+    if(isImageToImage){
+      imgBody.subject_reference=[{type:'character',image_file:args.subject_image}];
+      addStepMessage('📷 参考图: '+args.subject_image.slice(0,50)+'...');
+    }
     if(args.seed!==undefined&&args.seed!==null){const seedNum=Number(args.seed);if(Number.isFinite(seedNum)&&seedNum>=0)imgBody.seed=Math.floor(seedNum);}
     if(args.prompt_optimizer===true)imgBody.prompt_optimizer=true;
-    if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>0&&h<1e6&&h>0&&h<1e6){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
+    if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>=512&&w<=2048&&h>=512&&h<=2048&&w%8===0&&h%8===0){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
     if(args.aigc_watermark===true)imgBody.aigc_watermark=true;
-    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody);const br=data.base_resp||{};if(br.status_code&&br.status_code!==0)return '图片生成失败: '+(br.status_msg||'错误码 '+br.status_code);
+    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,25000);
+    if(data.error)return '图片生成失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '图片生成失败: '+br.status_msg||'错误码 '+br.status_code;
     const urls=data.data?.image_urls||[];
-    const failed=data.data?.failed_count||0;
-    if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张失败)';
+    const failed=data.metadata?.failed_count||0;
+    const success=data.metadata?.success_count||urls.length;
+    if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张因内容安全被拦截)';
     if(!urls.length)return '未生成图像';
-    if(failed>0)addStepMessage('⚠️ 成功 '+urls.length+' 张 / 失败 '+failed+' 张（共请求 '+n+' 张）');
-    // 并行保存多张图片（彼此独立，避免顺序阻塞；n=9 时最差 18min → 并行后 ~2min）
-    const shareUrls=[];
+    if(failed>0)addStepMessage('⚠️ 成功 '+success+' 张 / 失败 '+failed+' 张（内容安全拦截）');
     const saveResults=await Promise.allSettled(urls.map(url=>saveMediaToUser(url,'images')));
-    const savedFiles=[];
-    const renderUrls=[]; // 可渲染 URL（保存成功用分享链/下载链，失败回退 CDN）
+    const renderUrls=[];
     saveResults.forEach((s,i)=>{
-      const url=urls[i];
       if(s.status==='fulfilled'&&s.value){
-        const f=s.value;
-        savedFiles.push(f);
-        addAgentMessage('📁 已保存: '+f,'image');
-        // 构建可渲染 URL（非 MUD 模式也用，确保 <img src> 能访问保存后的文件）
-        const dlUrl=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f);
-        renderUrls.push(Promise.resolve(getShareUrl(f)).then(su=>su||dlUrl).catch(()=>dlUrl));
-        if(mudActive&&showMudImage)shareUrls.push(renderUrls[renderUrls.length-1]);
+        addAgentMessage('📁 已保存: '+s.value,'image');
+        const dlUrl=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(s.value);
+        renderUrls.push(getShareUrl(s.value).then(su=>su||dlUrl).catch(()=>dlUrl));
       }else{
-        if(s.status==='rejected')addStepMessage('⚠️ 第 '+(i+1)+' 张保存失败: '+(s.reason?.message||'未知'));
-        renderUrls.push(Promise.resolve(url));
-        if(mudActive&&showMudImage)shareUrls.push(renderUrls[renderUrls.length-1]);
-        savedFiles.push(url);
+        renderUrls.push(Promise.resolve(urls[i]));
       }
     });
-    // 并行解析分享/下载链接
-    const resolvedRender=await Promise.all(renderUrls);
-    if(mudActive&&showMudImage&&shareUrls.length){
-      // 累加而非覆盖：同一批次多个 image_generation 并发调用时各自贡献，避免相互覆盖丢失
-      const resolved=await Promise.all(shareUrls);
-      _mudPendingImage=(_mudPendingImage||[]).concat(resolved);
-    }
-    // 返回可渲染 URL（供 _execSingleTool 正确显示图片，避免相对沙箱路径 404）
-    return JSON.stringify(resolvedRender);
+    const resolved=await Promise.all(renderUrls);
+    if(mudActive&&showMudImage)_mudPendingImage=(_mudPendingImage||[]).concat(resolved);
+    return JSON.stringify(resolved);
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_imageQuotaExhausted=true;return '图片生成失败，所有 API Key 配额已用尽';}return '图片生成出错: '+e.message;}
+  },
+  async image_to_image(args,ctx){
+    if(_imageQuotaExhausted)return '图片生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.prompt||typeof args.prompt!=='string')return '图生图失败: 缺少 prompt 参数';
+    if(args.prompt.length>1500)return '图生图失败: prompt 过长（'+args.prompt.length+'字符，上限1500）';
+    if(!args.subject_image||typeof args.subject_image!=='string')return '图生图失败: 缺少 subject_image 参数（参考图URL）';
+    const VALID_RATIOS=['1:1','16:9','9:16','4:3','3:4','3:2','2:3','21:9'];
+    const aspectRatio=args.aspect_ratio&&VALID_RATIOS.includes(args.aspect_ratio)?args.aspect_ratio:'1:1';
+    const n=Math.min(Math.max(Number(args.n)||1,1),9);
+    if(args.n!==undefined&&(Number(args.n)||0)<1)return '图生图失败: n 参数必须为正整数（1-9）';
+    if(args.aspect_ratio&&!VALID_RATIOS.includes(args.aspect_ratio))addStepMessage('⚠️ aspect_ratio 非法，已回退为 1:1');
+    addStepMessage('🎨 图生图模式：参考照片生成变体...');
+    addStepMessage('📷 参考图: '+args.subject_image.slice(0,60)+'...');
+    try{
+    const imgBody={model:'image-01',prompt:args.prompt,subject_reference:[{type:'character',image_file:args.subject_image}],aspect_ratio:aspectRatio,n:n,response_format:'url'};
+    if(args.seed!==undefined&&args.seed!==null){const seedNum=Number(args.seed);if(Number.isFinite(seedNum)&&seedNum>=0)imgBody.seed=Math.floor(seedNum);}
+    if(args.prompt_optimizer===true)imgBody.prompt_optimizer=true;
+    if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>=512&&w<=2048&&h>=512&&h<=2048&&w%8===0&&h%8===0){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
+    if(args.aigc_watermark===true)imgBody.aigc_watermark=true;
+    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,25000);
+    if(data.error)return '图生图失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '图生图失败: '+br.status_msg||'错误码 '+br.status_code;
+    const urls=data.data?.image_urls||[];
+    const failed=data.metadata?.failed_count||0;
+    if(!urls.length&&failed>0)return '图生图失败 ('+failed+'张因内容安全被拦截)';
+    if(!urls.length)return '图生图失败: 未生成图像';
+    const saveResults=await Promise.allSettled(urls.map(url=>saveMediaToUser(url,'images')));
+    const renderUrls=[];
+    saveResults.forEach((s,i)=>{
+      if(s.status==='fulfilled'&&s.value){
+        addAgentMessage('📁 已保存: '+s.value,'image');
+        const dlUrl=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(s.value);
+        renderUrls.push(getShareUrl(s.value).then(su=>su||dlUrl).catch(()=>dlUrl));
+      }else{
+        renderUrls.push(Promise.resolve(urls[i]));
+      }
+    });
+    const resolved=await Promise.all(renderUrls);
+    if(mudActive&&showMudImage)_mudPendingImage=(_mudPendingImage||[]).concat(resolved);
+    return JSON.stringify(resolved);
+    }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_imageQuotaExhausted=true;return '图生图失败，所有 API Key 配额已用尽';}return '图生图出错: '+e.message;}
   },
   async video_generation(args,ctx){
     // 会话级配额耗尽保护：阻止 AI 在配额恢复前重复调用
@@ -2592,6 +2660,386 @@ const toolHandlers={
     } // end retry loop
     return '视频生成失败，多次重试后未获取到有效结果';
     }catch(e){if(e.name==='AbortError')throw e;return '视频生成出错: '+e.message;}
+  },
+  async text_to_video(args,ctx){
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.prompt||typeof args.prompt!=='string')return '文生视频失败: 缺少 prompt 参数';
+    if(args.prompt.length>2000)return '文生视频失败: prompt 过长（'+args.prompt.length+'字符，上限2000）';
+    if(args.duration&&![6,10].includes(Number(args.duration)))return '文生视频失败: duration 仅支持 6 或 10';
+    addStepMessage('🎬 开始文生视频（Hailuo-2.3），预计1-2分钟...');
+    try{
+    const body={model:'MiniMax-Hailuo-2.3',prompt:args.prompt};
+    if(args.duration)body.duration=Number(args.duration);
+    if(args.resolution&&['768P','1080P'].includes(args.resolution))body.resolution=args.resolution;
+    if(args.prompt_optimizer===false)body.prompt_optimizer=false;
+    if(args.fast_pretreatment)body.fast_pretreatment=true;
+    if(args.aigc_watermark)body.aigc_watermark=true;
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+      const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',body,30000);
+      if(createResp.error&&retry<2){addStepMessage('🔄 视频提交失败，重试...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+      if(createResp.error)return '文生视频启动失败: '+createResp.message;
+      const taskId=createResp.task_id;if(!taskId)return '文生视频失败：未获取到任务ID';
+      const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(delay);if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
+        if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+        lastResp=pollResp;break;
+      }
+      if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '文生视频超时，请稍后重试';}
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+        _videoQuotaExhausted=true;return '文生视频失败，所有 API Key 配额已用尽';
+      }
+      if(lastResp.error)return '文生视频失败: '+(lastResp.message||lastResp.error);
+      const br=lastResp.base_resp||{};
+      if(br.status_code&&br.status_code!==0)return '文生视频失败: '+(br.status_msg||'错误码 '+br.status_code);
+      let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
+      if(!url&&lastResp.file_id){
+        for(let fr=0;fr<4;fr++){
+          if(stopRequested)break;
+          try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{},30000);
+            url=fi.file?.download_url||fi.download_url||'';if(url)break;
+          }catch(e){}
+          if(fr<3)await interruptibleSleep(3000);
+        }
+      }
+      if(url){const f=await saveMediaToUser(url,'videos');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+      return '文生视频完成但无URL';
+    }
+    return '文生视频失败，多次重试后未获取到有效结果';
+    }catch(e){if(e.name==='AbortError')throw e;return '文生视频出错: '+e.message;}
+  },
+  async image_to_video(args,ctx){
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.first_frame_image||typeof args.first_frame_image!=='string')return '图生视频失败: 缺少 first_frame_image 参数';
+    if(args.prompt&&args.prompt.length>2000)return '图生视频失败: prompt 过长（'+args.prompt.length+'字符，上限2000）';
+    if(args.duration&&![6,10].includes(Number(args.duration)))return '图生视频失败: duration 仅支持 6 或 10';
+    addStepMessage('🎬 开始图生视频（I2V/Hailuo-2.3），预计1-2分钟...');
+    addStepMessage('📷 起始帧: '+args.first_frame_image.slice(0,60)+'...');
+    try{
+    const body={model:'MiniMax-Hailuo-2.3',first_frame_image:args.first_frame_image};
+    if(args.prompt)body.prompt=args.prompt;
+    if(args.duration)body.duration=Number(args.duration);
+    if(args.resolution&&['512P','720P','768P','1080P'].includes(args.resolution))body.resolution=args.resolution;
+    if(args.prompt_optimizer===false)body.prompt_optimizer=false;
+    if(args.fast_pretreatment)body.fast_pretreatment=true;
+    if(args.aigc_watermark)body.aigc_watermark=true;
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+      const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',body,30000);
+      if(createResp.error&&retry<2){addStepMessage('🔄 提交失败，重试...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+      if(createResp.error)return '图生视频启动失败: '+createResp.message;
+      const taskId=createResp.task_id;if(!taskId)return '图生视频失败：未获取到任务ID';
+      const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(delay);if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
+        if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+        lastResp=pollResp;break;
+      }
+      if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '图生视频超时，请稍后重试';}
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+        _videoQuotaExhausted=true;return '图生视频失败，所有 API Key 配额已用尽';
+      }
+      if(lastResp.error)return '图生视频失败: '+(lastResp.message||lastResp.error);
+      const br=lastResp.base_resp||{};
+      if(br.status_code&&br.status_code!==0)return '图生视频失败: '+(br.status_msg||'错误码 '+br.status_code);
+      let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
+      if(!url&&lastResp.file_id){
+        for(let fr=0;fr<4;fr++){
+          if(stopRequested)break;
+          try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{},30000);
+            url=fi.file?.download_url||fi.download_url||'';if(url)break;
+          }catch(e){}
+          if(fr<3)await interruptibleSleep(3000);
+        }
+      }
+      if(url){const f=await saveMediaToUser(url,'videos');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+      return '图生视频完成但无URL';
+    }
+    return '图生视频失败，多次重试后未获取到有效结果';
+    }catch(e){if(e.name==='AbortError')throw e;return '图生视频出错: '+e.message;}
+  },
+  async start_end_to_video(args,ctx){
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.last_frame_image||typeof args.last_frame_image!=='string')return '首尾帧生视频失败: 缺少 last_frame_image 参数';
+    if(args.prompt&&args.prompt.length>2000)return '首尾帧生视频失败: prompt 过长（'+args.prompt.length+'字符，上限2000）';
+    if(args.duration&&![6,10].includes(Number(args.duration)))return '首尾帧生视频失败: duration 仅支持 6 或 10';
+    addStepMessage('🎬 开始首尾帧生视频（Hailuo-02 SEF模式），预计1-2分钟...');
+    if(args.first_frame_image)addStepMessage('📷 首帧: '+args.first_frame_image.slice(0,60)+'...');
+    addStepMessage('📷 尾帧: '+args.last_frame_image.slice(0,60)+'...');
+    try{
+    const body={model:'MiniMax-Hailuo-02',last_frame_image:args.last_frame_image};
+    if(args.first_frame_image)body.first_frame_image=args.first_frame_image;
+    if(args.prompt)body.prompt=args.prompt;
+    if(args.duration)body.duration=Number(args.duration);
+    if(args.resolution&&['768P','1080P'].includes(args.resolution))body.resolution=args.resolution;
+    if(args.prompt_optimizer===false)body.prompt_optimizer=false;
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+      const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',body,30000);
+      if(createResp.error&&retry<2){addStepMessage('🔄 提交失败，重试...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+      if(createResp.error)return '首尾帧生视频启动失败: '+createResp.message;
+      const taskId=createResp.task_id;if(!taskId)return '首尾帧生视频失败：未获取到任务ID';
+      const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(delay);if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
+        if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+        lastResp=pollResp;break;
+      }
+      if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '首尾帧生视频超时，请稍后重试';}
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+        _videoQuotaExhausted=true;return '首尾帧生视频失败，所有 API Key 配额已用尽';
+      }
+      if(lastResp.error)return '首尾帧生视频失败: '+(lastResp.message||lastResp.error);
+      const br=lastResp.base_resp||{};
+      if(br.status_code&&br.status_code!==0)return '首尾帧生视频失败: '+(br.status_msg||'错误码 '+br.status_code);
+      let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
+      if(!url&&lastResp.file_id){
+        for(let fr=0;fr<4;fr++){
+          if(stopRequested)break;
+          try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{},30000);
+            url=fi.file?.download_url||fi.download_url||'';if(url)break;
+          }catch(e){}
+          if(fr<3)await interruptibleSleep(3000);
+        }
+      }
+      if(url){const f=await saveMediaToUser(url,'videos');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+      return '首尾帧生视频完成但无URL';
+    }
+    return '首尾帧生视频失败，多次重试后未获取到有效结果';
+    }catch(e){if(e.name==='AbortError')throw e;return '首尾帧生视频出错: '+e.message;}
+  },
+  async subject_reference_to_video(args,ctx){
+    if(_videoQuotaExhausted)return '视频生成暂时不可用（所有 MiniMax API Key 的今日视频配额已用尽，将于午夜 UTC+8 重置）';
+    if(!args.subject_image||typeof args.subject_image!=='string')return '主体参考生视频失败: 缺少 subject_image 参数';
+    if(args.prompt&&args.prompt.length>2000)return '主体参考生视频失败: prompt 过长（'+args.prompt.length+'字符，上限2000）';
+    addStepMessage('🎬 开始主体参考生视频（S2V-01），预计1-2分钟...');
+    addStepMessage('📷 参考人物: '+args.subject_image.slice(0,60)+'...');
+    try{
+    const body={model:'S2V-01',subject_reference:[{type:'character',image:[args.subject_image]}],prompt:args.prompt||'',aigc_watermark:!!args.aigc_watermark};
+    if(args.prompt_optimizer===false)body.prompt_optimizer=false;
+    for(let retry=0;retry<3;retry++){
+      if(stopRequested)return '操作已取消';
+      const createResp=await proxyRequest(MM_PROVIDER,'/video_submit',body,30000);
+      if(createResp.error&&retry<2){addStepMessage('🔄 提交失败，重试...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+      if(createResp.error)return '主体参考生视频启动失败: '+createResp.message;
+      const taskId=createResp.task_id;if(!taskId)return '主体参考生视频失败：未获取到任务ID';
+      const start=Date.now();const MAX_WAIT=180000;let delay=3000;let lastResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(delay);if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/video_poll',{task_id:taskId},15000);
+        if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
+        lastResp=pollResp;break;
+      }
+      if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '主体参考生视频超时';}
+      if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
+        _videoQuotaExhausted=true;return '主体参考生视频失败，所有 API Key 配额已用尽';
+      }
+      if(lastResp.error)return '主体参考生视频失败: '+(lastResp.message||lastResp.error);
+      const br=lastResp.base_resp||{};
+      if(br.status_code&&br.status_code!==0)return '主体参考生视频失败: '+(br.status_msg||'错误码 '+br.status_code);
+      let url=lastResp.video_url||lastResp.result_url||lastResp.data?.video_url||'';
+      if(!url&&lastResp.file_id){
+        for(let fr=0;fr<4;fr++){
+          if(stopRequested)break;
+          try{const fi=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+lastResp.file_id,{},30000);
+            url=fi.file?.download_url||fi.download_url||'';if(url)break;
+          }catch(e){}
+          if(fr<3)await interruptibleSleep(3000);
+        }
+      }
+      if(url){const f=await saveMediaToUser(url,'videos');if(f){addAgentMessage('📁 已保存: '+f,'video');const su=await getShareUrl(f);if(su)return su;}return url;}
+      return '主体参考生视频完成但无URL';
+    }
+    return '主体参考生视频失败，多次重试后未获取到有效结果';
+    }catch(e){if(e.name==='AbortError')throw e;return '主体参考生视频出错: '+e.message;}
+  },
+  async query_video_task(args,ctx){
+    if(!args.task_id||typeof args.task_id!=='string')return '查询失败: 缺少 task_id 参数';
+    try{
+    const data=await proxyRequest(MM_PROVIDER,'/query/video_generation',{task_id:args.task_id},15000);
+    if(data.error)return '查询失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '查询失败: '+br.status_msg;
+    const parts=[];
+    parts.push('🎬 任务状态: '+data.status);
+    if(data.file_id)parts.push('📁 file_id: '+data.file_id);
+    if(data.video_width&&data.video_height)parts.push('📐 分辨率: '+data.video_width+'x'+data.video_height);
+    if(data.status==='Success')parts.push('✅ 生成完成');
+    if(data.status==='Fail')parts.push('❌ 生成失败');
+    return parts.join('\n');
+    }catch(e){if(e.name==='AbortError')throw e;return '查询出错: '+e.message;}
+  },
+  async download_video(args,ctx){
+    if(!args.file_id||typeof args.file_id!=='string')return '下载失败: 缺少 file_id 参数';
+    try{
+    addStepMessage('📥 正在获取视频下载链接...');
+    const data=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+args.file_id,{},15000);
+    if(data.error)return '下载失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '下载失败: '+br.status_msg;
+    const fileObj=data.file||{};
+    const downloadUrl=fileObj.download_url||'';
+    if(!downloadUrl)return '下载失败: 未获取到下载链接';
+    const filename=fileObj.filename||'video_'+args.file_id+'.mp4';
+    addStepMessage('📥 正在下载 '+filename+' ('+(fileObj.bytes?(Math.round(fileObj.bytes/1024)+'KB'):'...')+')');
+    const f=await saveMediaToUser(downloadUrl,'videos');
+    if(f){
+      addAgentMessage('📁 已保存: '+f,'video');
+      const su=await getShareUrl(f);
+      return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));
+    }
+    return downloadUrl;
+    }catch(e){if(e.name==='AbortError')throw e;return '下载出错: '+e.message;}
+  },
+  async create_video_agent_task(args,ctx){
+    if(!args.template_id||typeof args.template_id!=='string')return '创建失败: 缺少 template_id 参数';
+    addStepMessage('🎬 创建视频Agent任务（模板ID: '+args.template_id+'）...');
+    try{
+    const body={template_id:args.template_id};
+    if(args.prompt)body.text_inputs=[{value:args.prompt}];
+    if(args.media_url)body.media_inputs=[{value:args.media_url}];
+    const data=await proxyRequest(MM_PROVIDER,'/video_template_generation',body,30000);
+    if(data.error)return '创建失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '创建失败: '+br.status_msg;
+    const taskId=data.task_id||'';
+    if(!taskId)return '创建失败: 未获取到 task_id';
+    addStepMessage('✅ 任务已创建');
+    return '视频Agent任务已创建，task_id: '+taskId+'。可调用 query_video_agent_task 查询状态，调用 download_video 下载结果。';
+    }catch(e){if(e.name==='AbortError')throw e;return '创建出错: '+e.message;}
+  },
+  async query_video_agent_task(args,ctx){
+    if(!args.task_id||typeof args.task_id!=='string')return '查询失败: 缺少 task_id 参数';
+    try{
+    const data=await proxyRequest(MM_PROVIDER,'/query/video_template_generation',{task_id:args.task_id},15000);
+    if(data.error)return '查询失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '查询失败: '+br.status_msg;
+    const parts=[];
+    parts.push('🎬 任务状态: '+data.status);
+    if(data.video_url)parts.push('🔗 视频链接: '+data.video_url.slice(0,80));
+    if(data.status==='Success')parts.push('✅ 生成完成，链接9小时有效');
+    if(data.status==='Fail')parts.push('❌ 生成失败');
+    return parts.join('\n');
+    }catch(e){if(e.name==='AbortError')throw e;return '查询出错: '+e.message;}
+  },
+  async upload_file_to_minimax(args,ctx){
+    if(!args.file_path||typeof args.file_path!=='string')return '上传失败: 缺少 file_path 参数';
+    if(!args.purpose||typeof args.purpose!=='string')return '上传失败: 缺少 purpose 参数';
+    const validPurposes=['voice_clone','prompt_audio','t2a_async_input','video_understanding'];
+    if(!validPurposes.includes(args.purpose))return '上传失败: purpose 必须是 '+validPurposes.join(', ');
+    try{
+    addStepMessage('📤 读取文件: '+args.file_path);
+    let fileBlob=null;let fileName='file';
+    if(await _ensureFS()){
+      try{
+        const fh=await _fileSystem.getFileHandle(_fileSystem.resolvePath(args.file_path));
+        const file=await fh.getFile();fileBlob=file;fileName=file.name||args.file_path.split('/').pop();
+      }catch(e){addStepMessage('⚠️ OPFS 读取失败: '+e.message);return '上传失败: 无法读取文件';}
+    }else{return '上传失败: 文件系统不可用';}
+    const formData=new FormData();
+    formData.append('_token',accessToken);
+    formData.append('_provider',MM_PROVIDER);
+    formData.append('_path','/files/upload');
+    formData.append('purpose',args.purpose);
+    formData.append('file',fileBlob,fileName);
+    addStepMessage('📤 正在上传到 MiniMax ('+args.purpose+')...');
+    const ctrl=new AbortController();let done=false;
+    const timer=setTimeout(()=>{done=true;ctrl.abort(new DOMException('上传超时 (60s)','TimeoutError'));},60000);
+    const resp=await fetch(PROXY_URL,{method:'POST',headers:{'X-Requested-With':'XMLHttpRequest','X-CSRF-Token':csrfToken},body:formData,signal:ctrl.signal});
+    done=true;clearTimeout(timer);
+    if(!resp.ok){const t=await resp.text().catch(()=>'');return '上传失败 (HTTP '+resp.status+'): '+t.slice(0,200);}
+    const data=await resp.json();
+    if(data.error)return '上传失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '上传失败: '+br.status_msg;
+    const fileObj=data.file||{};
+    if(!fileObj.file_id)return '上传失败: 未获取到 file_id';
+    return '✅ 上传成功\n📁 file_id: '+fileObj.file_id+'\n📄 文件名: '+fileObj.filename+(fileObj.bytes?'\n📏 大小: '+Math.round(fileObj.bytes/1024)+'KB':'');
+    }catch(e){if(e.name==='AbortError')throw e;return '上传出错: '+e.message;}
+  },
+  async retrieve_file(args,ctx){
+    if(!args.file_id||typeof args.file_id!=='string')return '检索失败: 缺少 file_id 参数';
+    try{
+    addStepMessage('📋 正在检索文件...');
+    const data=await proxyRequest(MM_PROVIDER,'/files/retrieve?file_id='+args.file_id,{},15000);
+    if(data.error)return '检索失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '检索失败: '+br.status_msg;
+    const fileObj=data.file||{};
+    if(!fileObj.file_id)return '检索失败: 未找到该文件';
+    const parts=['📁 文件信息'];
+    parts.push('  file_id: '+fileObj.file_id);
+    parts.push('  文件名: '+fileObj.filename);
+    parts.push('  用途: '+(fileObj.purpose||'未知'));
+    if(fileObj.bytes)parts.push('  大小: '+Math.round(fileObj.bytes/1024)+'KB');
+    if(fileObj.download_url)parts.push('  🔗 下载链接(1h有效): '+fileObj.download_url.slice(0,80));
+    return parts.join('\n');
+    }catch(e){if(e.name==='AbortError')throw e;return '检索出错: '+e.message;}
+  },
+  async retrieve_file_content(args,ctx){
+    if(!args.file_id||typeof args.file_id!=='string')return '下载失败: 缺少 file_id 参数';
+    try{
+    addStepMessage('📥 正在下载文件 '+args.file_id+'...');
+    const ctrl=new AbortController();let done2=false;
+    const timer2=setTimeout(()=>{done2=true;ctrl.abort(new DOMException('下载超时 (30s)','TimeoutError'));},30000);
+    const resp=await fetch(PROXY_URL,{method:'POST',headers:{'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','X-CSRF-Token':csrfToken},body:JSON.stringify({_token:accessToken,_provider:MM_PROVIDER,_path:'/files/retrieve_content?file_id='+args.file_id}),signal:ctrl.signal});
+    done2=true;clearTimeout(timer2);
+    if(!resp.ok)return '下载失败 (HTTP '+resp.status+')';
+    const blob=await resp.blob();
+    if(blob.size===0)return '下载失败: 文件为空';
+    const ext=blob.type.includes('audio')?'mp3':blob.type.includes('video')?'mp4':blob.type.includes('image')?'jpg':blob.type.includes('zip')?'zip':'bin';
+    const fileName='minimax_'+args.file_id+'.'+ext;
+    addStepMessage('📥 正在保存文件 ('+(blob.size/1024).toFixed(0)+'KB)...');
+    if(await _ensureFS()){
+      const path='tmp/'+fileName;
+      try{
+        const buffer=await blob.arrayBuffer();
+        await _fileSystem.writeFile(_fileSystem.resolvePath(path),new Uint8Array(buffer),false,true);
+        addAgentMessage('📁 已保存: '+path);
+        const su=await getShareUrl(path);
+        return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(path));
+      }catch(e){return '下载完成但保存失败: '+e.message;}
+    }
+    return '下载完成但文件系统不可用，大小: '+(blob.size/1024).toFixed(0)+'KB';
+    }catch(e){if(e.name==='AbortError')throw e;return '下载出错: '+e.message;}
+  },
+  async delete_file(args,ctx){
+    if(!args.file_id||typeof args.file_id!=='string')return '删除失败: 缺少 file_id 参数';
+    if(!args.purpose||typeof args.purpose!=='string')return '删除失败: 缺少 purpose 参数';
+    const validPurposes=['voice_clone','prompt_audio','t2a_async','t2a_async_input','video_generation'];
+    if(!validPurposes.includes(args.purpose))return '删除失败: purpose 必须是 '+validPurposes.join(', ');
+    try{
+    addStepMessage('🗑️ 正在删除文件: '+args.file_id);
+    const data=await proxyRequest(MM_PROVIDER,'/files/delete',{file_id:Number(args.file_id),purpose:args.purpose},15000);
+    if(data.error)return '删除失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '删除失败: '+br.status_msg;
+    return '✅ 文件 '+args.file_id+' 已删除';
+    }catch(e){if(e.name==='AbortError')throw e;return '删除出错: '+e.message;}
+  },
+  async list_files(args,ctx){
+    if(!args.purpose||typeof args.purpose!=='string')return '列出失败: 缺少 purpose 参数';
+    const validPurposes=['voice_clone','prompt_audio','t2a_async_input'];
+    if(!validPurposes.includes(args.purpose))return '列出失败: purpose 必须是 '+validPurposes.join(', ');
+    try{
+    addStepMessage('📋 正在列出文件 ('+args.purpose+')...');
+    const data=await proxyRequest(MM_PROVIDER,'/files/list?purpose='+args.purpose,{},15000);
+    if(data.error)return '列出失败: '+data.message;
+    const br=data.base_resp||{};
+    if(br.status_code&&br.status_code!==0)return '列出失败: '+br.status_msg;
+    const fileList=data.files||[];
+    if(!fileList.length)return '暂无 '+args.purpose+' 分类的文件';
+    const parts=['📁 共 '+fileList.length+' 个文件 ('+args.purpose+')'];
+    fileList.forEach((f,i)=>{
+      parts.push((i+1)+'. '+f.filename+'  (ID: '+f.file_id+', '+(f.bytes?Math.round(f.bytes/1024)+'KB':'?')+')');
+    });
+    return parts.join('\n');
+    }catch(e){if(e.name==='AbortError')throw e;return '列出出错: '+e.message;}
   },
   async music_generation(args,ctx){
     if(_musicQuotaExhausted)return '音乐生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
@@ -2655,15 +3103,33 @@ const toolHandlers={
     if(args.text.length>3000)return '语音生成失败: text 过长（'+args.text.length+'字符，上限3000）。请分段生成。';
     const speed=args.speed||1.0;if(typeof speed!=='number'||speed<0.5||speed>2.0)return '语音生成失败: speed 参数需在 0.5-2.0 之间';
     try{
-      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',{model:'speech-2.8-hd',text:args.text,voice_setting:{voice_id:args.voice_id||'female-shaonv',speed:speed},audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined});
+      const voice_setting={voice_id:args.voice_id||'female-shaonv',speed:speed};
+      if(args.vol!==undefined){const v=Number(args.vol);if(v>=0&&v<=2)voice_setting.vol=v;}
+      if(args.pitch!==undefined){const p=Number(args.pitch);if(p>=-12&&p<=12)voice_setting.pitch=p;}
+      if(args.emotion)voice_setting.emotion=args.emotion;
+      const body={model:'speech-2.8-hd',text:args.text,voice_setting,audio_setting:{format:'mp3',sample_rate:32000,bitrate:128000,channel:1},output_format:'url',stream:false,subtitle_enable:args.subtitle_enable||undefined};
+      if(args.pronunciation){
+        const tones=args.pronunciation.split(';').map(t=>t.trim()).filter(Boolean);
+        if(tones.length>0)body.pronunciation_dict={tone:tones};
+      }
+      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',body,25000);
       const baseResp=data.base_resp||{};
       if(baseResp.status_code&&baseResp.status_code!==0){
         const errMsg=baseResp.status_msg||'未知错误';
         return '语音生成失败: '+errMsg+'。可用音色: female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), female-tianmei(甜美), male-qn-qingse(青年男声), male-shaoshuai(少帅), male-zhixing(磁性), female-zhixing(知性), male-jingpin(精品男声), female-jingpin(精品女声)';
       }
-      const url=data.audio_url||data.data?.audio_url||data.data?.audio||'';
-      if(url){const f=await saveMediaToUser(url,'voice');if(f){addAgentMessage('📁 已保存: '+f,'voice');const su=await getShareUrl(f);if(mudActive&&showMudVoice){_mudPendingVoice=su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}else if(mudActive&&showMudVoice){_mudPendingVoice=url;}return url;}
-      return '语音生成完成但未获取到音频URL，API响应结构: '+JSON.stringify(data).slice(0,300);
+      const url=(data.audio_url||data.data?.audio_url||data.data?.audio||'').trim();
+      if(url){
+        const f=await saveMediaToUser(url,'voice');
+        if(f){
+          addAgentMessage('📁 已保存: '+f,'voice');
+          const su=await getShareUrl(f);
+          if(mudActive&&showMudVoice){_mudPendingVoice=su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));}
+          return su||(PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f));
+        }else if(mudActive&&showMudVoice){_mudPendingVoice=url;}
+        return url;
+      }
+      return '语音生成完成但未获取到音频URL';
     }catch(e){if(e.name==='AbortError')throw e;if(e.message&&e.message.includes('proxy_all_keys_exhausted')){_ttsQuotaExhausted=true;return '语音生成失败，所有 API Key 配额已用尽';}return '语音生成出错: '+e.message;}
   },
   async bash(args,ctx){
