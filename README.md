@@ -116,8 +116,8 @@ AI Agent 会自动处理所有步骤：
 
 ```
 cmdcode-solo/
-├── ui.html                        # 完整前端 Agent，含记忆检索（~232KB）
-├── proxy.php                      # API 代理 + 记忆系统核心（~91KB）
+├── ui.html                        # 完整前端 Agent，含记忆检索（~248KB）
+├── proxy.php                      # API 代理 + 记忆系统核心（~90KB）
 ├── config.enc.php                 # AES-256-CBC 加密配置文件（含数据库凭据和 API 密钥）
 ├── .htaccess                      # Apache/LiteSpeed 安全规则
 ├── .gitignore                     # Git 忽略规则
@@ -133,8 +133,8 @@ cmdcode-solo/
 
 | 文件 | 大小 | 描述 |
 |:----|:----|:------|
-| **ui.html** | ~232 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、模型选择设置面板、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
-| **proxy.php** | ~91 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含加密配置动态加载（config.enc.php）、用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道、MUD 游戏引擎。PHP 超时已延长至 300s 以支持 DeepSeek V4 百万 token 上下文 |
+| **ui.html** | ~248 KB | 前端聊天界面，零框架依赖。内置 AI Agent 对话、文件管理器、图片查看器、音视频播放、用户认证、模型选择设置面板、多模态工具（文生图/视频/音乐/语音）、3 Key 限流轮换、会话级配额耗尽保护 |
+| **proxy.php** | ~90 KB | 多供应商 API 代理，解决浏览器 CORS。支持 MiniMax（三密钥轮换容灾）和 OpenCode Go，含加密配置动态加载（config.enc.php）、用户认证、文件系统、记忆系统、远程 Bash、分享链接、网页抓取、完整视频/音乐异步管道、MUD 游戏引擎。PHP 超时已延长至 300s 以支持 DeepSeek V4 百万 token 上下文 |
 | **config.enc.php** | ~5.2 KB | AES-256-CBC 加密配置，含 MySQL 凭据、ACCESS_TOKEN、API 密钥（密钥永不落盘明文） |
 | **.htaccess** | ~1.3 KB | Apache/LiteSpeed 安全规则：阻止直接访问 `.enc.php` 和隐藏文件，保护 `.htaccess` 自身 |
 
@@ -186,7 +186,7 @@ CmdCode Solo 遵循 **极简、单页、零依赖** 的哲学。不依赖任何�
 - 文生图 / 图生图 / TTS / 音乐 / 视频多模态
 - iOS/Android 安全区域适配
 
-核心应用代码（HTML + CSS + JS）约 232KB，适合学习原生 Web 开发或作为轻量级 AI 应用基座。
+核心应用代码（HTML + CSS + JS）约 248KB，适合学习原生 Web 开发或作为轻量级 AI 应用基座。
 
 ---
 

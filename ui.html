@@ -291,13 +291,22 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
     <div class="settings-group">
       <div class="settings-group-title"><i class="fas fa-font"></i> 文字模型</div>
       <div class="settings-row">
-        <div class="settings-label"><i class="fas fa-server"></i> 提供商套餐</div>
+        <div class="settings-label"><i class="fas fa-server"></i> 文字供应商</div>
         <select class="settings-select" id="textProvider">
-          <option value="opencode-go">OpenCode Go 套餐 1</option>
-          <option value="opencode-go1">OpenCode Go 套餐 2</option>
-          <option value="opencode-go2">OpenCode Go 套餐 3</option>
-          <option value="opencode-go3">OpenCode Go 套餐 4</option>
-          <option value="opencode-go4">OpenCode Go 套餐 5</option>
+          <optgroup label="— 自动轮换 —">
+            <option value="opencode-go">OpenCode Go（5 密钥自动轮换）</option>
+            <option value="minimax">MiniMax 文字接口（3 密钥自动轮换）</option>
+          </optgroup>
+          <optgroup label="— OpenCode Go 手动指定 —">
+            <option value="opencode-go1">OpenCode Go 套餐 2</option>
+            <option value="opencode-go2">OpenCode Go 套餐 3</option>
+            <option value="opencode-go3">OpenCode Go 套餐 4</option>
+            <option value="opencode-go4">OpenCode Go 套餐 5</option>
+          </optgroup>
+          <optgroup label="— MiniMax 手动指定 —">
+            <option value="minimax1">MiniMax 套餐 2</option>
+            <option value="minimax2">MiniMax 套餐 3</option>
+          </optgroup>
         </select>
       </div>
       <div class="settings-row">
@@ -309,11 +318,11 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
     <div class="settings-group">
       <div class="settings-group-title"><i class="fas fa-photo-film"></i> 多模态模型</div>
       <div class="settings-row">
-        <div class="settings-label"><i class="fas fa-server"></i> 提供商套餐</div>
+        <div class="settings-label"><i class="fas fa-server"></i> 多模态供应商</div>
         <select class="settings-select" id="mmProvider">
-          <option value="minimax">MiniMax 套餐 1</option>
-          <option value="minimax1">MiniMax 套餐 2</option>
-          <option value="minimax2">MiniMax 套餐 3</option>
+          <option value="minimax">MiniMax 多模态（3 密钥自动轮换）</option>
+          <option value="minimax1">MiniMax 多模态套餐 2</option>
+          <option value="minimax2">MiniMax 多模态套餐 3</option>
         </select>
       </div>
       <div class="settings-row">
@@ -366,8 +375,11 @@ const mudStatusBar=document.getElementById('mudStatusBar');
 
 const PROXY_URL='https://cmdcode.cn/cmdcode-minimax-toolset/proxy.php';
 // 聊天 LLM 供应商（可在设置页切换，保存到 localStorage）
-// 轮换链：opencode-go → opencode-go1 → ... → opencode-go4（5套餐）
-// minimax → minimax1 → minimax2（3套餐）
+// 轮换链（后端 ROTATION_GROUPS）：
+//   opencode-go → opencode-go1 → ... → opencode-go4（5 套餐独立 provider，每家 1 密钥）
+//   minimax → minimax1 → minimax2（3 套餐独立 provider，每家 1 密钥）
+// 5+3=8 手动可选供应商；任意 _provider 传入都会触发对应 rotation group 全链轮换
+// 模型库：所有 opencode-go* 共享 OpenCode Go 模型集；所有 minimax* 共享 MiniMax 原生模型集
 const PROVIDER_MODELS={
   'opencode-go':[
     {value:'deepseek-v4-flash',label:'DeepSeek V4 Flash'},
@@ -389,12 +401,18 @@ const PROVIDER_MODELS={
   ],
 };
 const PROVIDER_INFO={
-  'opencode-go':'5 个套餐密钥轮换，支持 DeepSeek/GLM/Kimi/MiMo/MiniMax/Qwen 等文字模型。后端自动处理 429 限流和每日轮换。',
-  'minimax':'3 个套餐密钥轮换，支持 MiniMax-M 系列多模态模型。适用于图片/视频/音乐生成。',
+  'opencode-go':'5 个 OpenCode Go 套餐密钥轮换，支持 DeepSeek/GLM/Kimi/MiMo/MiniMax/Qwen 等文字模型。后端自动处理 429 限流和每日轮换。',
+  'minimax':'3 个 MiniMax 套餐密钥轮换，支持 MiniMax-M 系列多模态模型。适用于图片/视频/音乐生成；亦可用作文字 chat 接口（接口路径与 OpenCode Go 不同）。',
 };
+// 合法 chat 供应商全集：5 opencode-go* + 3 minimax*
+const VALID_CHAT_PROVIDERS=new Set(['opencode-go','opencode-go1','opencode-go2','opencode-go3','opencode-go4','minimax','minimax1','minimax2']);
 let CHAT_PROVIDER=localStorage.getItem('cmdcode_provider')||'opencode-go';
+// 历史遗留值归一化（仅拒绝不存在的供应商，不动用户在合法集内的选择）
+if(!VALID_CHAT_PROVIDERS.has(CHAT_PROVIDER)){CHAT_PROVIDER='opencode-go';localStorage.setItem('cmdcode_provider','opencode-go');}
 let CHAT_MODEL=localStorage.getItem('cmdcode_model')||'deepseek-v4-flash';
 let MM_PROVIDER=localStorage.getItem('cmdcode_mm_provider')||'minimax';
+// minimax 系列已扩展到 minimax/minimax1/minimax2 三个供应商；其他遗留值归一为 minimax
+if(MM_PROVIDER!=='minimax'&&MM_PROVIDER!=='minimax1'&&MM_PROVIDER!=='minimax2'){MM_PROVIDER='minimax';localStorage.setItem('cmdcode_mm_provider','minimax');}
 let MM_MODEL=localStorage.getItem('cmdcode_mm_model')||'MiniMax-M2.7';
 let accessToken='';  // 从服务器端获取，不硬编码在前端
 let isRunning=false;
@@ -419,17 +437,29 @@ async function attemptReauth(){
     try{
       // 内部调用传 _noReauth 避免再触发 attemptReauth 所导致的自死锁
       const res=await apiCall('session',{},{ignoreStop:true,_noReauth:true});
-      if(res.loggedIn){accessToken=res.token||'';if(accessToken)addAgentMessage('🔄 会话已恢复');return true;}
-      if(currentUser&&currentUser.username){
-        const tok=await apiCall('login',{username:currentUser.username,password:''},{ignoreStop:true,_noReauth:true});
-        if(tok&&tok.token){accessToken=tok.token;addAgentMessage('🔄 令牌已刷新');return true;}
+      if(res&&res.loggedIn){
+        // PHP session 仍有效；session 接口不返回 token，必须单独调 get_proxy_token
+        // ⚠ 不能再写 accessToken = res.token || ''，这会把现有 token 清零
+        try{
+          const tok=await apiCall('get_proxy_token',{},{ignoreStop:true,_noReauth:true});
+          accessToken=tok.token||accessToken;  // 仅在拿到新 token 时才覆盖
+          if(accessToken){addAgentMessage('🔄 会话已恢复，令牌已刷新');return true;}
+        }catch(e){}
+        // get_proxy_token 失败 → 会话本身可用，文件功能仍可工作，AI 暂时不可用
+        return false;
       }
-    }catch(e){}
-    // 会话已过期，需要重新登录
-    currentUser=null;accessToken='';updateUIForUser(null);
-    try{stopPeriodicMemoryExtraction();}catch(e2){}
-    addAgentMessage('⚠️ 登录已过期，请重新登录。');
-    return false;
+      // 会话已过期：前端无法用空密码重新登录（后端 password_verify 必然失败）
+      // 必须让用户手动重新输入密码
+      currentUser=null;accessToken='';updateUIForUser(null);
+      try{stopPeriodicMemoryExtraction();}catch(e2){}
+      addAgentMessage('⚠️ 登录已过期，请重新登录。');
+      return false;
+    }catch(e){
+      currentUser=null;accessToken='';updateUIForUser(null);
+      try{stopPeriodicMemoryExtraction();}catch(e2){}
+      addAgentMessage('⚠️ 会话检查失败: '+(e.message||'网络错误')+'。请重新登录。');
+      return false;
+    }
   })();
   try{return await _reauthing;}finally{_reauthing=null;}
 }
@@ -940,8 +970,24 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
     done=true;clearTimeout(timer);
     if(!resp.ok){
       let errText=await resp.text().catch(()=>'');
-      try{const errJson=JSON.parse(errText);errText=errJson.message||errJson.detail?.last_error||errJson.error||errText;}catch(e){ }
-      throw new Error(errText.slice(0,200)||'HTTP '+resp.status);
+      let errShort='HTTP '+resp.status;
+      let parsed=null;
+      try{parsed=JSON.parse(errText);}catch(e){}
+      if(parsed){
+        if(parsed.error==='proxy_all_keys_exhausted'){
+          const prov=parsed.detail?.provider||provider;
+          const lastErr=parsed.detail?.last_error||'未知';
+          throw new Error('套餐 '+prov+' 的所有 API Key 均失败 ('+lastErr+')。请在设置中切换其他套餐或联系管理员');
+        }
+        if(parsed.error==='unknown_provider'){
+          throw new Error('未知供应商: '+provider+'。请在设置中重新选择套餐');
+        }
+        if(parsed.error==='token_invalid'){
+          throw new Error('登录令牌已失效，请重新登录');
+        }
+        errText=parsed.message||parsed.detail?.last_error||parsed.error||errText;
+      }
+      throw new Error((errText||errShort).slice(0,200));
     }
     // 流式模式：逐块读取 SSE 事件，组装完整响应
     if(isStream&&resp.body){
@@ -954,11 +1000,23 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
       let toolCalls=[];
       let role='assistant';
       let chunkCount=0;
+      let firstChunkSeen=false;
+      // 首 chunk 90s 超时定时器（后续 chunk 切到 600s）
+      let watchTimer=setTimeout(()=>{},0);
+      const watchdog=(ms)=>{clearTimeout(watchTimer);watchTimer=setTimeout(()=>{if(!firstChunkSeen)reader.cancel(new DOMException('首 chunk 超时','TimeoutError')).catch(()=>{});},ms);};
+      watchdog(90000);
       try{
         while(true){
-          const{done:readerDone,value}=await reader.read();
+          let readR;
+          try{
+            readR=await reader.read();
+          }catch(reject){
+            if(reject.name==='TimeoutError')throw new Error('流式响应首 chunk 超时 (90s) — 后端未返回任何数据。可能原因：① 密钥失效 ② MiniMax 不支持该模型/工具组合 ③ 网络中断');
+            throw reject;
+          }
+          const{done:readerDone,value}=readR;
           if(readerDone){break;}
-          chunkCount++;
+          chunkCount++;firstChunkSeen=true;clearTimeout(watchTimer);watchTimer=setTimeout(()=>{},0);
           buffer+=decoder.decode(value,{stream:true});
           const lines=buffer.split('\n');
           buffer=lines.pop()||'';
@@ -966,12 +1024,23 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
             if(!line.startsWith('data: '))continue;
             const data=line.slice(6).trim();
             if(data==='[DONE]')continue;
-            try{
-              const parsed=JSON.parse(data);
-              const choice=parsed.choices?.[0];
-              if(!choice)continue;
-              const delta=choice.delta||{};
-              if(delta.content)content+=delta.content;
+            let parsed;
+            try{parsed=JSON.parse(data);}catch(e){console.warn('[SSE] Parse error:',e.message,'data:',data.slice(0,100));continue;}
+            if(parsed.error){
+              const errMsg=parsed.message||parsed.error;
+              const detail=parsed.detail?(' ['+JSON.stringify(parsed.detail)+']'):'';
+              throw new Error('流式响应错误: '+errMsg+detail);
+            }
+            const choice=parsed.choices?.[0];
+            if(!choice){
+              // MiniMax chat 起手常返回 base_resp：检查 base_resp.status_code 非 0 视为软错误
+              if(parsed.base_resp&&parsed.base_resp.status_code&&parsed.base_resp.status_code!==0){
+                throw new Error('MiniMax 错误: '+(parsed.base_resp.status_msg||'状态码 '+parsed.base_resp.status_code));
+              }
+              continue;
+            }
+            const delta=choice.delta||{};
+            if(delta.content)content+=delta.content;
               if(delta.reasoning_content)reasoning+=delta.reasoning_content;
               if(delta.role)role=delta.role;
               if(choice.finish_reason)finishReason=choice.finish_reason;
@@ -990,10 +1059,10 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
                   if(tc.function?.arguments)toolCalls[idx].function.arguments+=tc.function.arguments;
                 }
               }
-            }catch(e){console.warn('[SSE] Parse error:', e.message, 'data:', data.slice(0,100));}
           }
         }
       }catch(readerError){
+        clearTimeout(watchTimer);
         console.error('[SSE] Reader error:', readerError);
         if(readerError.name!=='AbortError')throw readerError;
       }
@@ -1006,7 +1075,17 @@ async function proxyRequest(provider,apiPath,body,timeoutMs=240000){
     }
     // 非 JSON 响应兜底：避免 SyntaxError 暴露给用户
     try{return await resp.json();}catch(e){const raw=await resp.text().catch(()=>'');throw new Error('代理响应解析失败 (HTTP '+resp.status+'): '+(raw||e.message).slice(0,200));}
-  }catch(e){done=true;clearTimeout(timer);throw e;}
+  }catch(e){
+    done=true;clearTimeout(timer);
+    // 区分错误类型，提供更准确的诊断信息
+    if(e.name==='AbortError')throw e;
+    if(e.name==='TimeoutError')throw e;
+    // fetch 网络层失败（CORS/断网/服务器不可达）→ 给出可操作的提示
+    if(e.name==='TypeError'||e.message.includes('Failed to fetch')||e.message.includes('NetworkError')){
+      throw new Error('网络连接失败: 无法访问代理服务器（'+provider+'）。请检查网络或刷新页面重新登录');
+    }
+    throw e;
+  }
 }
 
 // ── OPFS 虚拟文件系统（bash 模拟层） ──
@@ -1362,8 +1441,6 @@ async function syncServerAndOPFS(){
       const oSize=oInfo.size>=0?oInfo.size:-1;
       // 时间戳相近（差值在60s内）且大小一致（或一方 size 未知）→ 跳过，避免反复上传下载相同内容
       if(Math.abs(sTime-oTime)<=60000&&(sSize<0||oSize<0||sSize===oSize)){skippedSame++;continue;}
-      // 时间戳有差异但文件大小一致 → 大概率内容相同（仅 mtime 因写入回显/传输延迟变了），跳过避免无效传输
-      if(Math.abs(sTime-oTime)>60000&&sSize>=0&&oSize>=0&&sSize===oSize){skippedSame++;continue;}
       if(sTime>oTime){
         try{
           const srcPath=serverDedupedMap.get(f)||f;
@@ -2113,13 +2190,18 @@ class BashExecutor{
   async _xargs(p,raw){
     const cmdMatch=raw.match(/xargs\s+(.*)/);
     if(!cmdMatch)throw new Error('xargs: 用法 xargs command');
-    const baseCmd=cmdMatch[1].trim();
+    const baseCmdStr=cmdMatch[1].trim();
     const input=p._stdin||'';
     const items=input.split('\n').filter(Boolean);
     const results=[];
+    // Parse base command args once to prevent item content (;, |, && etc) from being
+    // re-parsed as shell separators via exec(). Direct dispatch avoids injection.
+    const baseArgs=this.parseCommand(baseCmdStr);
+    if(!baseArgs.length)return '';
     for(const item of items){
-      const fullCmd=baseCmd+' '+item;
-      const result=await this.exec(fullCmd);
+      const allArgs=[...baseArgs,item];
+      const itemRaw=baseCmdStr+' '+item;
+      const result=await this._dispatch(allArgs,itemRaw);
       results.push(result);
     }
     return results.join('\n');
@@ -2852,7 +2934,15 @@ class EnhancedToolExecutor{
 
 const executor=new EnhancedToolExecutor();
 
-// ── 工具去重检测 ──
+// ── 工具去重检测（order-independent 参数比较） ──
+function sortKeys(obj){
+  if(obj===null||typeof obj!=='object')return obj;
+  if(Array.isArray(obj))return obj.map(sortKeys);
+  return Object.keys(obj).sort().reduce((acc,k)=>{
+    acc[k]=sortKeys(obj[k]);
+    return acc;
+  },{});
+}
 function isDuplicateCall(current,previous){
   if(!previous||previous.length===0)return false;
   for(const prev of previous){
@@ -2860,8 +2950,8 @@ function isDuplicateCall(current,previous){
       if(prev.function.name!==curr.function.name)continue;
       try{
         const pa=JSON.parse(prev.function.arguments);const ca=JSON.parse(curr.function.arguments);
-        // 比较参数的实际值，而非仅比较 key 名
-        if(JSON.stringify(pa)===JSON.stringify(ca))return true;
+        // order-independent 比较：LLM 可能以不同 key 顺序输出相同参数
+        if(JSON.stringify(sortKeys(pa))===JSON.stringify(sortKeys(ca)))return true;
       }catch(e){}
     }
   }
@@ -3159,7 +3249,7 @@ async function runAgentLoop(userMessage){
   }
   const MAX_LOOPS=500;let loopCount=0;let consecutiveFailures=0;lastToolCalls=null;executor.toolFailCounts={};
   const recentToolHashes=[];const recentResponses=[];const MAX_HISTORY=5;
-  let consecutiveReadBash=0;const READBASH_STREAK_LIMIT=8;
+  let consecutiveReadBash=0;const READBASH_STREAK_LIMIT=100;
   const MAX_TOTAL_RUNTIME=1800000;const loopStartTime=Date.now();const RUNTIME_WARN_AT=1500000;let runtimeWarned=false;
   try{
   while(loopCount<MAX_LOOPS){
@@ -3226,15 +3316,25 @@ const activeModel=CHAT_MODEL;
     }
     let llmResponse;
     // LLM 调用重试：最多 5 次，指数退避（2s→4s→8s→16s→32s），应对网络波动和限流
+    // ⚠ 后端 expandRotationKeys 会以同一 startIdx 遍历所有 5 个 opencode-go 密钥，
+    // 前端切换 _provider 名不能改变后端密钥顺序，故不需要前端再做套餐级降级。
     for(let llmRetry=0;llmRetry<5;llmRetry++){
       try{llmResponse=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:messages,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts},600000);break;}
       catch(e){
-        if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
+        if(e.name==='AbortError'||e.name==='TimeoutError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
         const errDetail=e.message||'未知错误';
-        // 400 错误不重试（请求格式错误，重试无意义）
+        // 不可恢复错误：不重试，直接报错退出
         if(errDetail.includes('请求格式错误')||errDetail.includes('bad_request')){
-          addAgentMessage('❌ 模型调用失败: '+errDetail);setRunning(false);return;}
-        if(llmRetry>=4){addAgentMessage('❌ 调用模型失败（已重试5次）: '+errDetail);setRunning(false);return;}
+          addAgentMessage('❌ 模型调用失败（请求格式错误）: '+errDetail+'。模型: '+activeModel+' / 套餐: '+activeProvider);setRunning(false);return;}
+        if(errDetail.includes('API Key 均失败')||errDetail.includes('proxy_all_keys_exhausted')){
+          addAgentMessage('❌ 后端所有密钥均被冷却或失败: '+errDetail+'。请稍后重试（密钥冷却通常 1-5 分钟自动恢复）');setRunning(false);return;}
+        if(errDetail.includes('unknown_provider')||errDetail.includes('未知供应商')){
+          addAgentMessage('❌ 模型调用失败: 未知供应商 "'+activeProvider+'"，请在设置中重新选择套餐');setRunning(false);return;}
+        if(errDetail.includes('token_invalid')||errDetail.includes('登录令牌已失效')){
+          addAgentMessage('❌ 登录已过期，请重新登录');setRunning(false);return;}
+        if(errDetail.includes('网络连接失败')){
+          addAgentMessage('❌ 无法连接服务器: '+errDetail);setRunning(false);return;}
+        if(llmRetry>=4){addAgentMessage('❌ 调用模型失败（已重试5次）: '+errDetail+'。模型: '+activeModel+' / 套餐: '+activeProvider);setRunning(false);return;}
         const d=Math.min(2000*Math.pow(2,llmRetry),32000);
         addStepMessage('⚠️ 模型调用失败: '+errDetail.slice(0,80)+'... '+d/1000+'秒后重试 ('+(llmRetry+1)+'/5)');await new Promise(r=>setTimeout(r,d));}
     }
@@ -3285,7 +3385,11 @@ const activeModel=CHAT_MODEL;
       let continueResp;
       for(let llmRetry=0;llmRetry<5;llmRetry++){
         try{continueResp=await proxyRequest(activeProvider,'/chat/completions',{model:activeModel,messages:continueCtx,tools:ALL_TOOLS,tool_choice:'auto',temperature:1.0,max_tokens:16384,stream:true,...thinkingOpts},600000);break;}
-        catch(e){if(e.name==='AbortError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
+        catch(e){
+          if(e.name==='AbortError'||e.name==='TimeoutError'){addStepMessage('⏹ 已停止');setRunning(false);return;}
+          const msg=e.message||'';
+          // 不可恢复错误：不重试
+          if(msg.includes('token_invalid')||msg.includes('网络连接失败')||msg.includes('unknown_provider')||msg.includes('API Key 均失败')||msg.includes('登录令牌已失效')){addAgentMessage('❌ 续写失败: '+msg);setRunning(false);return;}
           if(llmRetry>=4){addAgentMessage('❌ 续写失败（已重试5次）: '+e.message);setRunning(false);return;}
           const d=Math.min(2000*Math.pow(2,llmRetry),32000);
           addStepMessage('⚠️ 续写调用失败，'+d/1000+'秒后重试 ('+(llmRetry+1)+'/5)...');await new Promise(r=>setTimeout(r,d));}
@@ -3726,34 +3830,101 @@ function fillModelDropdown(selectEl,models,selectedValue){
   const valid=models.some(m=>m.value===selectedValue);
   selectEl.value=valid?selectedValue:(models[0]?.value||'');
 }
+// 切换供应商是无缝的：保存即可生效，下轮 while 立即用新值。
+// 后端 ROTATION_GROUPS 已定义 opencode-go(5)+minimax(3) 两条独立密钥链，
+// 任何合法 _provider 都会按其所属组展开密钥并 429 自动轮换+每日起点轮换。
 function updateSettingsCurrent(){
   settingsCurrent.textContent='文字: '+CHAT_PROVIDER+' / '+CHAT_MODEL+'  |  多模态: '+MM_PROVIDER+' / '+MM_MODEL;
 }
+// 根据 provider 名推导其模型库 key（同族的 opencode-go* 共享 OpenCode Go 列表；minimax* 共享 MiniMax 列表）
+function providerFamilyModelKey(prov){
+  if(prov.startsWith('opencode-go'))return 'opencode-go';
+  if(prov.startsWith('minimax'))return 'minimax';
+  return 'opencode-go';
+}
+function rebuildTextModelDropdown(){
+  const key=providerFamilyModelKey(textProvider.value);
+  fillModelDropdown(textModel,PROVIDER_MODELS[key]||[],textModel.value);
+}
+function rebuildMmModelDropdown(){
+  const key=providerFamilyModelKey(mmProvider.value);
+  fillModelDropdown(mmModel,PROVIDER_MODELS[key]||[],mmModel.value);
+}
 function openSettings(){
-  textProvider.value=CHAT_PROVIDER.startsWith('opencode-go')?CHAT_PROVIDER:'opencode-go';
-  fillModelDropdown(textModel,PROVIDER_MODELS['opencode-go'],CHAT_MODEL);
-  mmProvider.value=MM_PROVIDER.startsWith('minimax')?MM_PROVIDER:'minimax';
-  fillModelDropdown(mmModel,PROVIDER_MODELS['minimax'],MM_MODEL);
+  textProvider.value=CHAT_PROVIDER;  // 已在初始化时验证为 8 选 1 之一
+  rebuildTextModelDropdown();
+  mmProvider.value=MM_PROVIDER;
+  rebuildMmModelDropdown();
   updateSettingsCurrent();
   settingsOverlay.classList.remove('hidden');
 }
 function closeSettings(){settingsOverlay.classList.add('hidden');}
 settingsBtn.addEventListener('click',openSettings);
 settingsCancel.addEventListener('click',closeSettings);
-textProvider.addEventListener('change',()=>{fillModelDropdown(textModel,PROVIDER_MODELS['opencode-go'],textModel.value);});
-mmProvider.addEventListener('change',()=>{fillModelDropdown(mmModel,PROVIDER_MODELS['minimax'],mmModel.value);});
-settingsSave.addEventListener('click',()=>{
+// 切换 textProvider 时按族刷新 textModel 列表；若当前所选模型不在新族里，自动选第一个
+textProvider.addEventListener('change',()=>{
+  rebuildTextModelDropdown();
+  // 跨族切换：当前 CHAT_MODEL 与新族不匹配 → 自动改用新族首选项，避免参数错配
+  const key=providerFamilyModelKey(textProvider.value);
+  const valid=PROVIDER_MODELS[key].some(m=>m.value===textModel.value);
+  if(!valid&&key!==providerFamilyModelKey(CHAT_PROVIDER)){
+    // 原族 → 新族：清掉原值
+    textModel.value=PROVIDER_MODELS[key][0]?.value||'';
+  }
+});
+mmProvider.addEventListener('change',rebuildMmModelDropdown);
+settingsSave.addEventListener('click',async()=>{
   CHAT_PROVIDER=textProvider.value;
   CHAT_MODEL=textModel.value;
   MM_PROVIDER=mmProvider.value;
   MM_MODEL=mmModel.value;
+  // 终极验证：当前模型必须属于当前 supplier 族，否则自动回落到该族首选项
+  const ck=providerFamilyModelKey(CHAT_PROVIDER);
+  if(!PROVIDER_MODELS[ck].some(m=>m.value===CHAT_MODEL)){
+    CHAT_MODEL=PROVIDER_MODELS[ck][0]?.value||'';
+    localStorage.setItem('cmdcode_model',CHAT_MODEL);
+  }
+  const mk=providerFamilyModelKey(MM_PROVIDER);
+  if(!PROVIDER_MODELS[mk].some(m=>m.value===MM_MODEL)){
+    MM_MODEL=PROVIDER_MODELS[mk][0]?.value||'';
+    localStorage.setItem('cmdcode_mm_model',MM_MODEL);
+  }
   localStorage.setItem('cmdcode_provider',CHAT_PROVIDER);
   localStorage.setItem('cmdcode_model',CHAT_MODEL);
   localStorage.setItem('cmdcode_mm_provider',MM_PROVIDER);
   localStorage.setItem('cmdcode_mm_model',MM_MODEL);
   updateSettingsCurrent();
   closeSettings();
-  addStepMessage('⚙ 已切换 — 文字: '+CHAT_MODEL+'  多模态: '+MM_MODEL);
+  addStepMessage('⚙ 已切换 — 文字: '+CHAT_MODEL+' ['+CHAT_PROVIDER+']  多模态: '+MM_MODEL);
+  // 无缝切换：保存后立即刷新 proxy_token 并验证，如果过期则尝试静默重新登录
+  if(currentUser){
+    try{
+      const sess=await apiCall('session',{},{ignoreStop:true,_noReauth:true});
+      if(sess&&sess.loggedIn){
+        // 会话仍有效 → 重新获取 proxy_token（确保 token 最新的，防止长期未操作过期）
+        try{const tok=await apiCall('get_proxy_token',{},{ignoreStop:true,_noReauth:true});accessToken=tok.token||accessToken;}catch(e){}
+        addStepMessage('✅ 切换生效，当前会话有效');
+      }else{
+        // 会话过期 → 尝试用已记住的用户名静默重新登录
+        if(currentUser&&currentUser.username){
+          addStepMessage('🔄 会话已过期，正在静默重新登录...');
+          try{
+            await attemptReauth();
+            if(accessToken)addStepMessage('✅ 重新登录成功，切换已生效');
+            else addAgentMessage('⚠️ 重新登录失败，请手动退出后重新登录');
+          }catch(e){addAgentMessage('⚠️ 重新登录失败: '+e.message+'，请手动重新登录');}
+        }else{
+          addAgentMessage('⚠️ 会话已过期，请重新登录');
+        }
+      }
+    }catch(e){
+      // 检查失败（网络问题等）→ 先尝试刷新 token
+      try{const tok=await apiCall('get_proxy_token',{},{ignoreStop:true,_noReauth:true});accessToken=tok.token||accessToken;addStepMessage('✅ 已刷新令牌');}catch(e2){addAgentMessage('⚠️ 切换后令牌刷新失败，请检查网络');}
+    }
+  }else{
+    // 未登录访客 → 尝试获取访客 proxy_token
+    try{const tok=await apiCall('get_proxy_token',{},{ignoreStop:true,_noReauth:true});accessToken=tok.token||'';if(accessToken)addStepMessage('✅ 已获取访客令牌');else addAgentMessage('⚠️ 未登录，请先登录后再切换套餐');}catch(e){addAgentMessage('⚠️ 令牌获取失败，请先登录');}
+  }
 });
 settingsOverlay.addEventListener('click',(e)=>{if(e.target===settingsOverlay)closeSettings();});
 updateSettingsCurrent(); // 页面加载时更新当前模型显示
@@ -3898,13 +4069,15 @@ window.addEventListener('beforeunload',function(){
   if(currentUser&&accessToken&&recentConversationMessages.length>=2){
     const remainingMsgs=getUnprocessedMessages();
     if(remainingMsgs.length>=2){
-      navigator.sendBeacon(PROXY_URL,JSON.stringify({
-        _action:'memory',sub_action:'enqueue_extract',
-        messages:remainingMsgs.slice(-10),
-        scene_id:localStorage.getItem('cmdcode_current_scene')||'scene_default',
-        trigger:'session_end',
-        _token:accessToken
-      }));
+      // sendBeacon 负载上限约 64KB，超过则截断消息量
+      const buildBody=(n)=>{
+        const msgs=remainingMsgs.slice(-n);
+        const scene=localStorage.getItem('cmdcode_current_scene')||'scene_default';
+        return JSON.stringify({_action:'memory',sub_action:'enqueue_extract',messages:msgs,scene_id:scene,trigger:'session_end',_token:accessToken});
+      };
+      let body=buildBody(10);
+      if(body.length>60000)body=buildBody(3);
+      if(body.length<=64000)navigator.sendBeacon(PROXY_URL,body);
     }
   }
 });

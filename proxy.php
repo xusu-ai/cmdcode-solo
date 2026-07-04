@@ -2117,3 +2117,4 @@ echo json_encode([
         'last_error' => $last_error,
     ],
 ]);
+?>
