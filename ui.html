@@ -829,6 +829,8 @@ function addImageMessage(url){
 }
 function scrollToBottom(){chatContainer.scrollTop=chatContainer.scrollHeight;}
 function escapeHtml(text){
+  // null/undefined 归一为空串，避免 UI 上出现 "null"/"undefined" 字面文本
+  if(text===null||text===undefined)return '';
   return String(text).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 // URL 安全检查：只允许 http/https/mailto 协议，拒绝 javascript: data: vbscript:
@@ -1201,7 +1203,7 @@ async function syncServerAndOPFS(){
       for(const e of(res.files||[])){
         if(!e||!e.path)continue;
         if(e.is_dir)await listServer(e.path,depth+1);
-        else serverRawFiles.push({path:e.path,mtime:e.mtime||''});
+        else serverRawFiles.push({path:e.path,mtime:e.mtime||'',size:e.size!=null?Number(e.size):-1});
       }
     }
     await listServer('');
@@ -1220,7 +1222,7 @@ async function syncServerAndOPFS(){
   const serverDedupedMap=new Map(); // fixed → raw（O(1) 查找）
   for(const raw of serverRawFiles){
     const fixed=dedupPath(raw.path);
-    if(!serverFileSet.has(fixed)){serverFileSet.add(fixed);serverFiles.push(fixed);serverFileMap.set(fixed,{path:fixed,mtime:raw.mtime});}
+    if(!serverFileSet.has(fixed)){serverFileSet.add(fixed);serverFiles.push(fixed);serverFileMap.set(fixed,{path:fixed,mtime:raw.mtime,size:raw.size});}
     if(fixed!==raw.path){serverDeduped.push({raw:raw.path,fixed});serverDedupedMap.set(fixed,raw.path);}
   }
   
@@ -1233,9 +1235,9 @@ async function syncServerAndOPFS(){
         const path=prefix?prefix+'/'+name:name;
         if(handle.kind==='directory')await listOPFS(handle,path,depth+1);
         else{
-          let mtime=0;
-          try{const f=await handle.getFile();mtime=f.lastModified||0;}catch(e){}
-          opfsRawFiles.push({path,mtime});
+          let mtime=0;let size=-1;
+          try{const f=await handle.getFile();mtime=f.lastModified||0;size=f.size!=null?f.size:-1;}catch(e){}
+          opfsRawFiles.push({path,mtime,size});
         }
       }
     }
@@ -1260,7 +1262,7 @@ async function syncServerAndOPFS(){
   const opfsDeduped=[]; 
   for(const raw of opfsRawFiles){
     const fixed=dedupPath(raw.path);
-    if(!opfsFileSet.has(fixed)){opfsFileSet.add(fixed);opfsFiles.push(fixed);opfsFileMap.set(fixed,{path:fixed,mtime:raw.mtime});}
+    if(!opfsFileSet.has(fixed)){opfsFileSet.add(fixed);opfsFiles.push(fixed);opfsFileMap.set(fixed,{path:fixed,mtime:raw.mtime,size:raw.size});}
     if(fixed!==raw.path)opfsDeduped.push({raw:raw.path,fixed});
   }
   const allDeduped=[...serverDeduped,...opfsDeduped];
@@ -1287,7 +1289,7 @@ async function syncServerAndOPFS(){
       }
       await _fileSystem.deleteEntry(absRaw);
       // 迁移后重新获取 mtime，更新 fileMap（写入操作会更新 lastModified）
-      try{const fh=await _fileSystem.getFileHandle(absFixed);const f=await fh.getFile();opfsFileMap.set(fixed,{path:fixed,mtime:f.lastModified||0});}catch(e){}
+      try{const fh=await _fileSystem.getFileHandle(absFixed);const f=await fh.getFile();opfsFileMap.set(fixed,{path:fixed,mtime:f.lastModified||0,size:f.size!=null?f.size:-1});}catch(e){}
       addStepMessage('  ↳ '+raw+' → '+fixed);
     }catch(e){
       addStepMessage('  ⚠️ 迁移失败: '+raw+' → '+fixed+' ('+e.message+')');
@@ -1348,7 +1350,7 @@ async function syncServerAndOPFS(){
   // 3.5 双方都有的文件：比较修改时间，以最新的为准同步
   const bothFiles=opfsFiles.filter(f=>serverFileSet.has(f));
   if(bothFiles.length>0){
-    let toPullUpdate=0,toPushUpdate=0;
+    let toPullUpdate=0,toPushUpdate=0,skippedSame=0;
     for(const f of bothFiles){
       if(stopRequested){addStepMessage('⏹ 同步已停止');break;}
       const sInfo=serverFileMap.get(f);
@@ -1356,14 +1358,20 @@ async function syncServerAndOPFS(){
       if(!sInfo||!oInfo)continue;
       const sTime=sInfo.mtime?new Date(sInfo.mtime.replace(' ','T')+'+08:00').getTime()||0:0;
       const oTime=oInfo.mtime||0;
-      if(sTime>oTime+1000){
+      const sSize=sInfo.size>=0?sInfo.size:-1;
+      const oSize=oInfo.size>=0?oInfo.size:-1;
+      // 时间戳相近（差值在60s内）且大小一致（或一方 size 未知）→ 跳过，避免反复上传下载相同内容
+      if(Math.abs(sTime-oTime)<=60000&&(sSize<0||oSize<0||sSize===oSize)){skippedSame++;continue;}
+      // 时间戳有差异但文件大小一致 → 大概率内容相同（仅 mtime 因写入回显/传输延迟变了），跳过避免无效传输
+      if(Math.abs(sTime-oTime)>60000&&sSize>=0&&oSize>=0&&sSize===oSize){skippedSame++;continue;}
+      if(sTime>oTime){
         try{
           const srcPath=serverDedupedMap.get(f)||f;
           await pullFile(f,srcPath);
           pulled++;toPullUpdate++;
           addStepMessage('⬇ '+f);
         }catch(e){failedFiles.push({file:f,action:'拉取(更新)',error:e.message});}
-      }else if(oTime>sTime+1000){
+      }else{
         try{
           await pushFile(f);
           pushed++;toPushUpdate++;
@@ -1371,8 +1379,8 @@ async function syncServerAndOPFS(){
         }catch(e){failedFiles.push({file:f,action:'推送(更新)',error:e.message});}
       }
     }
-    if(toPullUpdate>0||toPushUpdate>0){
-      addStepMessage('🔄 时间戳比较: 拉取更新 '+toPullUpdate+' 个, 推送更新 '+toPushUpdate+' 个');
+    if(toPullUpdate>0||toPushUpdate>0||skippedSame>0){
+      addStepMessage('🔄 时间戳/大小比较: 拉取更新 '+toPullUpdate+' 个, 推送更新 '+toPushUpdate+' 个'+(skippedSame>0?', 跳过相同 '+skippedSame+' 个':''));
     }
   }
   
@@ -1977,9 +1985,14 @@ class BashExecutor{
     else if(p.length===2){start=parseInt(p[0]);end=parseInt(p[1]);}
     else if(p.length>=3){start=parseInt(p[0]);step=parseInt(p[1]);end=parseInt(p[2]);}
     if(isNaN(start)||isNaN(end)||isNaN(step))throw new Error('seq: 参数必须是数字');
+    // step=0 明确报错（避免无意义迭代；旧实现静默返回空字符串造成困惑）
+    if(step===0)return 'seq: step 不能为 0';
+    // 限制最大输出条数，防止 seq 1 1 1 这种被解析成 end=1 时仍安全
+    const MAX_SEQ=100000;
     const result=[];
-    if(step>0){for(let i=start;i<=end;i+=step)result.push(String(i));}
-    else if(step<0){for(let i=start;i>=end;i+=step)result.push(String(i));}
+    if(step>0){for(let i=start;i<=end&&result.length<MAX_SEQ;i+=step)result.push(String(i));}
+    else if(step<0){for(let i=start;i>=end&&result.length<MAX_SEQ;i+=step)result.push(String(i));}
+    if(result.length>=MAX_SEQ)addStepMessage&&addStepMessage('⚠️ seq 输出已达上限 '+MAX_SEQ+', 已截断');
     return result.join('\n');
   }
   async _rev(p){
@@ -2076,10 +2089,12 @@ class BashExecutor{
     if(files.length<2)throw new Error('comm: 需要两个文件参数');
     const c1=await this.vfs.readFile(this.vfs.resolvePath(files[0]));
     const c2=await this.vfs.readFile(this.vfs.resolvePath(files[1]));
-    // 仅去尾换行产生的空尾元素，保留行内的合法空行（GNU comm 视空行为可比较记录）
     const stripTail=s=>s.endsWith('\n')?s.slice(0,-1):s;
     const l1=stripTail(c1).split('\n');
     const l2=stripTail(c2).split('\n');
+    // 提前检测未排序：comm 要求两个文件均按字典序排列，否则结果无意义
+    const isSorted=a=>a.every((x,i)=>i===0||x>=a[i-1]);
+    if(!isSorted(l1)||!isSorted(l2))addStepMessage&&addStepMessage('⚠️ comm: 输入未按字典序排序，结果可能不正确，请先 sort');
     const only1=[],only2=[],both=[];
     let i=0,j=0;
     while(i<l1.length&&j<l2.length){
@@ -2111,15 +2126,14 @@ class BashExecutor{
   }
   async _paste(p){
     const files=p.filter(a=>!a.startsWith('-'));
-    if(files.length<2)throw new Error('paste: 需要两个文件参数');
-    const c1=await this.vfs.readFile(this.vfs.resolvePath(files[0]));
-    const c2=await this.vfs.readFile(this.vfs.resolvePath(files[1]));
-    const l1=c1.split('\n'),l2=c2.split('\n');
-    const maxLen=Math.max(l1.length,l2.length);
+    if(!files.length)throw new Error('paste: 缺少文件参数');
+    // 单文件时等同 cat（GNU 允许），避免误用门槛
+    if(files.length===1){return await this.vfs.readFile(this.vfs.resolvePath(files[0]));}
+    // 多文件：逐行以 \t 拼接；行数不齐时缺列留空
+    const allLines=await Promise.all(files.map(f=>this.vfs.readFile(this.vfs.resolvePath(f)).then(c=>c.split('\n'))));
+    const maxLen=Math.max(...allLines.map(a=>a.length));
     const result=[];
-    for(let i=0;i<maxLen;i++){
-      result.push((l1[i]||'')+'\t'+(l2[i]||''));
-    }
+    for(let i=0;i<maxLen;i++)result.push(allLines.map(a=>a[i]||'').join('\t'));
     return result.join('\n');
   }
   async _split(p){
