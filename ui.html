@@ -1612,7 +1612,52 @@ async function syncServerAndOPFS(){
   }finally{_syncing=false;}
  }
 class BashExecutor{
-  constructor(vfs){this.vfs=vfs;}
+  constructor(vfs){this.vfs=vfs;this._prevCwd='/sandbox';}
+  // 通配符展开：* ? [abc] 在最后一段或中间段
+  async _expandGlob(pattern){
+    if(!pattern.includes('*')&&!pattern.includes('?')&&!pattern.includes('['))return [pattern];
+    const abs=this.vfs.resolvePath(pattern);
+    const parts=abs.split('/');
+    let baseParts=[];
+    // 找第一个含通配符的段
+    let wildIdx=parts.findIndex(seg=>seg.includes('*')||seg.includes('?')||seg.includes('['));
+    if(wildIdx<0)return [pattern];
+    baseParts=parts.slice(0,wildIdx);
+    const wildSegs=parts.slice(wildIdx);
+    let baseDir=baseParts.join('/')||'/';
+    try{
+      let current=[baseDir+'/'];
+      for(const seg of wildSegs){
+        if(!seg.includes('*')&&!seg.includes('?')&&!seg.includes('[')){
+          current=current.map(p=>p+seg+'/');
+          continue;
+        }
+        const regex=new RegExp('^'+seg.replace(/\./g,'\\.').replace(/\*/g,'.*').replace(/\?/g,'.').replace(/\[([^\]]+)\]/g,'[$1]')+'$');
+        const next=[];
+        for(const dirPath of current){
+          try{
+            const dh=await this.vfs.getDirHandle(dirPath.replace(/\/$/,''));
+            for await(const[name,handle]of dh.entries()){
+              if(regex.test(name)){next.push(dirPath+name+(handle.kind==='directory'?'/':''));}
+            }
+          }catch(e){}
+        }
+        current=next;
+      }
+      // 去掉末尾的 / （非根目录）
+      return current.map(p=>p.replace(/\/$/,'')||'/').filter(p=>p&&p!=='/');
+    }catch(e){return [pattern];}
+  }
+  // 批量通配符展开（保留 flags）
+  async _expandArgs(args){
+    const out=[];
+    for(const a of args){
+      if(a.startsWith('-')){out.push(a);continue;}
+      const expanded=await this._expandGlob(a);
+      out.push(...expanded);
+    }
+    return out;
+  }
   // 在引号外按字符 ch 切分（支持 "..." / '...' 转义），返回切分后的段
   _splitTopLevel(cmd,ch){
     const parts=[];let cur='';let depth=0;
@@ -1677,7 +1722,13 @@ class BashExecutor{
         }
       }
     }
-    const c=args[0].toLowerCase();const p=args.slice(1);
+    const c=args[0].toLowerCase();
+    // 通配符展开：cat *.txt → cat a.txt b.txt；但 echo/Find 的 * 不展开
+    const NO_GLOB_CMDS=new Set(['echo','find']);
+    let p=args.slice(1);
+    if(!NO_GLOB_CMDS.has(c)){
+      try{p=await this._expandArgs(p);}catch(e){}
+    }
     // slice() 不复制自定义属性，需显式把管道 stdin 传给 p（供 grep/nl/tee/xargs 等消费）
     if(args._stdin!=null)p._stdin=args._stdin;
     try{
@@ -1738,91 +1789,213 @@ class BashExecutor{
     }catch(e){return'命令执行错误: '+e.message;}
   }
   async _ls(p){
-    // 过滤掉 -la / -l / -a 等参数，只保留路径参数
+    const long=p.includes('-l')||p.includes('-la')||p.includes('-al');
+    const showAll=p.includes('-a')||p.includes('-la')||p.includes('-al');
+    const recursive=p.includes('-R');
     const pathArg=p.find(a=>!a.startsWith('-'))||'.';
     try{
-      const abs=this.vfs.resolvePath(pathArg);const dh=await this.vfs.getDirHandle(abs);const entries=[];
-      for await(const[name,handle]of dh.entries())entries.push(handle.kind==='directory'?name+'/':name);
-      return entries.sort().join('\n')||'(空目录)';
+      const abs=this.vfs.resolvePath(pathArg);const dh=await this.vfs.getDirHandle(abs);
+      const allLines=[];
+      const scanDir=async(dirHandle,prefix)=>{
+        const entries=[];
+        for await(const[name,handle]of dirHandle.entries()){
+          if(!showAll&&name.startsWith('.'))continue;
+          entries.push({name,handle});
+        }
+        entries.sort((a,b)=>a.name.toLowerCase()>b.name.toLowerCase()?1:-1);
+        const dirHeader=prefix!==''?prefix+'/:':'';
+        if(dirHeader&&recursive)allLines.push('',dirHeader);
+        for(const{name,handle}of entries){
+          if(long){
+            let size=0,mtime='-',type=handle.kind==='directory'?'d':'-';
+            try{const f=await handle.getFile();size=f.size;mtime=f.lastModified?new Date(f.lastModified).toISOString().replace('T',' ').slice(0,19):'-';}catch(e){}
+            allLines.push(type+'rw-r--r-- 1 root root '+String(size).padStart(8)+' '+mtime+' '+name);
+          }else{
+            allLines.push(handle.kind==='directory'?name+'/':name);
+          }
+        }
+        if(recursive){
+          for(const{name,handle}of entries){
+            if(handle.kind==='directory')await scanDir(handle,prefix?prefix+'/'+name:name);
+          }
+        }
+      };
+      await scanDir(dh,pathArg==='.'?'':pathArg);
+      return allLines.join('\n')||'(空目录)';
     }catch(e){return 'ls: 无法访问 '+pathArg+': '+e.message;}
   }
   async _cat(p){
     if(!p.length)throw new Error('cat: 缺少文件参数');
-    // 支持多文件串联输出
+    const showNum=p.includes('-n');
+    const args=p.filter(a=>!a.startsWith('-'));
     const parts=[];
-    for(let i=0;i<p.length;i++){
-      const each=p[i];
-      try{parts.push(await this.vfs.readFile(this.vfs.resolvePath(each)));}
+    for(let i=0;i<args.length;i++){
+      const each=args[i];
+      try{
+        let content=await this.vfs.readFile(this.vfs.resolvePath(each));
+        if(showNum){
+          const lines=content.split('\n');
+          content=lines.map((l,idx)=>String(idx+1).padStart(6)+'  '+l).join('\n');
+        }
+        parts.push(content);
+      }
       catch(e){if(e.name==='AbortError')throw e;parts.push('cat: '+each+': '+e.message);}
     }
     return parts.join('\n');
   }
   async _echo(p,raw){
-    // 优先匹配引号包裹的文本，避免引号内的 > 被误当作重定向符
-    const m=raw.match(/echo\s+("(?:[^"\\]|\\.)*"|'[^']*'|.+?)\s*(>>?)\s+(.+)/);
+    let noNewline=false;
+    let args=[...p];
+    if(args[0]==='-n'){noNewline=true;args=args.slice(1);}
+    const content=args.join(' ');
+    // 考虑引号内容去引号
+    let text=content;
+    if((text.startsWith('"')&&text.endsWith('"'))||(text.startsWith("'")&&text.endsWith("'")))text=text.slice(1,-1);
+    // 检查重定向
+    const m=raw.match(/echo\s+.*?(>>?)\s+(.+)/);
     if(m){
-      let text=m[1];const append=m[2]==='>>';const fp=this.vfs.resolvePath(m[3].trim());
-      if((text.startsWith('"')&&text.endsWith('"'))||(text.startsWith("'")&&text.endsWith("'")))text=text.slice(1,-1);
-      await this.vfs.writeFile(fp,text+'\n',append);return'';
+      const append=m[1]==='>>';const fp=this.vfs.resolvePath(m[2].trim());
+      await this.vfs.writeFile(fp,text+(noNewline?'':'\n'),append);return'';
     }
-    return p.join(' ');
+    return text+(noNewline?'':'\n');
   }
   async _mkdir(p){
-    if(!p.length)throw new Error('mkdir: 缺少目录名');
-    await this.vfs.ensureDir(this.vfs.resolvePath(p[0]));return'';
+    const dirs=p.filter(a=>!a.startsWith('-'));
+    if(!dirs.length)throw new Error('mkdir: 缺少目录名');
+    for(const d of dirs)await this.vfs.ensureDir(this.vfs.resolvePath(d));
+    return'';
   }
   async _rm(p){
-    const recursive=p.some(a=>a.startsWith('-')&&/r/.test(a));
+    const recursive=p.some(a=>a.startsWith('-')&&/[rR]/.test(a));
+    const force=p.some(a=>a.startsWith('-')&&/[f]/.test(a));
     const files=p.filter(a=>!a.startsWith('-'));
     if(!files.length)throw new Error('rm: 缺少文件名');
-    for(const f of files)await this.vfs.deleteEntry(this.vfs.resolvePath(f),{recursive});
+    for(const f of files){
+      try{await this.vfs.deleteEntry(this.vfs.resolvePath(f),{recursive});}
+      catch(e){if(!force)throw e;}
+    }
     return'';
   }
   async _rmdir(p){
-    const recursive=p.some(a=>a.startsWith('-')&&/p/.test(a));
-    if(!p.filter(a=>!a.startsWith('-')).length)throw new Error('rmdir: 缺少目录名');
-    const target=p.find(a=>!a.startsWith('-'));
-    const abs=this.vfs.resolvePath(target);this.vfs._assertSandbox(abs);
-    const dh=await this.vfs.getDirHandle(abs.slice(0,abs.lastIndexOf('/'))||'/');
-    await dh.removeEntry(abs.split('/').pop(),{recursive});return'';
+    const dirs=p.filter(a=>!a.startsWith('-'));
+    if(!dirs.length)throw new Error('rmdir: 缺少目录名');
+    for(const target of dirs){
+      const abs=this.vfs.resolvePath(target);this.vfs._assertSandbox(abs);
+      try{const dh=await this.vfs.getDirHandle(abs.slice(0,abs.lastIndexOf('/'))||'/');await dh.removeEntry(abs.split('/').pop());}
+      catch(e){if(e.name==='NotFoundError'||e.code===8)throw new Error('rmdir: '+target+' 不存在');throw e;}
+    }
+    return'';
   }
   async _cd(p){
-    if(!p.length)return this.vfs.cwd;
+    if(!p.length||p[0]==='~'){this.vfs.cwd='/sandbox';return'';}
+    if(p[0]==='-'){this.vfs.cwd=this._prevCwd||'/sandbox';this._prevCwd=this.vfs.cwd;return'';}
+    this._prevCwd=this.vfs.cwd;
     const target=p[0]==='/'?'/sandbox':this.vfs.resolvePath(p[0]);
     this.vfs.cwd=target;return'';
   }
   async _touch(p){
-    if(!p.length)throw new Error('touch: 缺少文件名');
-    await this.vfs.writeFile(this.vfs.resolvePath(p[0]),'');return'';
+    const files=p.filter(a=>!a.startsWith('-'));
+    if(!files.length)throw new Error('touch: 缺少文件名');
+    for(const f of files){
+      const abs=this.vfs.resolvePath(f);
+      let exists=false;
+      try{await this.vfs.getFileHandle(abs);exists=true;}catch(e){}
+      if(!exists)await this.vfs.writeFile(abs,'');
+    }
+    return'';
   }
   async _cp(p){
     if(p.length<2)throw new Error('cp: 缺少源或目标');
-    const src=this.vfs.resolvePath(p[0]);const dst=this.vfs.resolvePath(p[1]);
-    try{await this.vfs.writeFile(dst,await this.vfs.readFile(src));}catch(e){if(e.name==='AbortError')throw e;if(e.name==='NotFoundError'||e.code===8)throw new Error('cp: 源文件不存在: '+p[0]);throw new Error('cp: '+e.message);}
+    const recursive=p.includes('-r')||p.includes('-R');
+    const nonFlags=p.filter(a=>!a.startsWith('-'));
+    if(nonFlags.length<2)throw new Error('cp: 缺少源或目标');
+    const dst=this.vfs.resolvePath(nonFlags[nonFlags.length-1]);
+    const sources=nonFlags.slice(0,-1);
+    let copied=0;
+    for(const srcArg of sources){
+      const src=this.vfs.resolvePath(srcArg);
+      try{
+        // 尝试当作目录处理
+        let isDir=false;
+        try{const dh=await this.vfs.getDirHandle(src);isDir=true;}catch(e){}
+        if(isDir){
+          if(!recursive){throw new Error('cp: '+srcArg+' 是目录，请使用 -r 递归复制');}
+          // 递归复制目录
+          const dirName=src.split('/').pop();
+          let dstDir=dst;
+          try{await this.vfs.getDirHandle(dst);dstDir=dst+'/'+dirName;}catch(e){}
+          await this._cpRecursive(src,dstDir);
+          copied++;
+        }else{
+          // 文件复制
+          let dstPath=dst;
+          try{await this.vfs.getDirHandle(dst);dstPath=dst+'/'+src.split('/').pop();}catch(e){}
+          await this.vfs.writeFile(dstPath,await this.vfs.readFile(src));
+          copied++;
+        }
+      }catch(e){if(e.name==='AbortError')throw e;if(e.name==='NotFoundError'||e.code===8)throw new Error('cp: 源文件不存在: '+srcArg);throw new Error('cp: '+e.message);}
+    }
     return'';
+  }
+  async _cpRecursive(srcDir,dstDir){
+    const dh=await this.vfs.getDirHandle(srcDir);
+    for await(const[name,handle]of dh.entries()){
+      const srcPath=srcDir+'/'+name;
+      const dstPath=dstDir+'/'+name;
+      if(handle.kind==='directory'){
+        await this._cpRecursive(srcPath,dstPath);
+      }else{
+        const content=await this.vfs.readFile(srcPath);
+        await this.vfs.writeFile(dstPath,content);
+      }
+    }
   }
   async _mv(p){
     if(p.length<2)throw new Error('mv: 缺少源或目标');
-    const src=this.vfs.resolvePath(p[0]);
-    try{await this._cp(p);await this.vfs.deleteEntry(src);}catch(e){if(e.name==='AbortError')throw e;throw new Error('mv: '+e.message);}
+    const dst=this.vfs.resolvePath(p[p.length-1]);
+    const sources=p.slice(0,-1);
+    for(const srcArg of sources){
+      const src=this.vfs.resolvePath(srcArg);
+      let isDir=false;
+      try{await this.vfs.getDirHandle(src);isDir=true;}catch(e){}
+      try{
+        if(isDir){
+          // 目录移动 = 递归复制后删除源
+          const dirName=src.split('/').pop();
+          let dstDir=dst;
+          try{await this.vfs.getDirHandle(dst);dstDir=dst+'/'+dirName;}catch(e){}
+          await this._cpRecursive(src,dstDir);
+          await this.vfs.deleteEntry(src,{recursive:true});
+        }else{
+          let dstPath=dst;
+          try{await this.vfs.getDirHandle(dst);dstPath=dst+'/'+src.split('/').pop();}catch(e){}
+          await this.vfs.writeFile(dstPath,await this.vfs.readFile(src));
+          await this.vfs.deleteEntry(src);
+        }
+      }catch(e){if(e.name==='AbortError')throw e;throw new Error('mv: '+e.message);}
+    }
     return'';
   }
   async _head(p){
-    const n=p.findIndex(a=>a==='-n');
-    let lines=10;
-    if(n>=0&&p[n+1]!==undefined&&p[n+1]!==''){const v=parseInt(p[n+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
-    const file=p.find(a=>!a.startsWith('-')&&(n<0||a!==p[n+1]));
+    const ci=p.indexOf('-c');const ni=p.indexOf('-n');
+    let lines=10;let bytes=-1;
+    if(ni>=0&&p[ni+1]!==undefined&&p[ni+1]!==''){const v=parseInt(p[ni+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
+    if(ci>=0&&p[ci+1]!==undefined&&p[ci+1]!==''){const v=parseInt(p[ci+1]);if(Number.isFinite(v)&&v>=0)bytes=v;}
+    const file=p.find(a=>!a.startsWith('-')&&(ni<0||a!==p[ni+1])&&(ci<0||a!==p[ci+1]));
     if(!file)throw new Error('head: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
+    if(bytes>=0)return content.slice(0,bytes);
     return content.split('\n').slice(0,lines).join('\n');
   }
   async _tail(p){
-    const n=p.findIndex(a=>a==='-n');
-    let lines=10;
-    if(n>=0&&p[n+1]!==undefined&&p[n+1]!==''){const v=parseInt(p[n+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
-    const file=p.find(a=>!a.startsWith('-')&&(n<0||a!==p[n+1]));
+    const ci=p.indexOf('-c');const ni=p.indexOf('-n');
+    let lines=10;let bytes=-1;
+    if(ni>=0&&p[ni+1]!==undefined&&p[ni+1]!==''){const v=parseInt(p[ni+1]);if(Number.isFinite(v)&&v>=0)lines=v;}
+    if(ci>=0&&p[ci+1]!==undefined&&p[ci+1]!==''){const v=parseInt(p[ci+1]);if(Number.isFinite(v)&&v>=0)bytes=v;}
+    const file=p.find(a=>!a.startsWith('-')&&(ni<0||a!==p[ni+1])&&(ci<0||a!==p[ci+1]));
     if(!file)throw new Error('tail: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
+    if(bytes>=0)return content.slice(-bytes);
     const all=content.split('\n');
     return lines===0?'':all.slice(-lines).join('\n');
   }
@@ -1831,18 +2004,19 @@ class BashExecutor{
     const showLines=p.includes('-l')||p.length===files.length;
     const showWords=p.includes('-w');
     const showChars=p.includes('-c');
-    const showAll=!showLines&&!showWords&&!showChars;
+    const showCharCount=p.includes('-m'); // -m: 字符数
+    const showAll=!showLines&&!showWords&&!showChars&&!showCharCount;
     const results=[];
     for(const f of files){
       const content=await this.vfs.readFile(this.vfs.resolvePath(f));
-      // 计可视行数：abc=1, abc\n=1, abc\ndef=2, abc\ndef\n=2, ""=0（split 一律偏多 1，故按 \n 数 + 末尾未换行补 1）
       const lines=(content.match(/\n/g)||[]).length+(content.length>0&&!content.endsWith('\n')?1:0);
       const words=content.length===0?0:content.split(/\s+/).filter(Boolean).length;
-      const chars=content.length;
+      const chars=content.length; // JS string length (UTF-16)
       const parts=[];
       if(showAll||showLines)parts.push(lines);
       if(showAll||showWords)parts.push(words);
       if(showAll||showChars)parts.push(chars);
+      if(showCharCount)parts.push(chars);
       parts.push(f);
       results.push(parts.join('\t'));
     }
@@ -1851,15 +2025,34 @@ class BashExecutor{
   async _sort(p){
     const reverse=p.includes('-r');
     const numeric=p.includes('-n');
-    const file=p.find(a=>!a.startsWith('-'));
+    const unique=p.includes('-u');
+    const ki=p.indexOf('-k');
+    const ti=p.indexOf('-t');
+    const sep=ti>=0?p[ti+1]:null;
+    let keyStart=1,keyEnd=0;
+    if(ki>=0&&p[ki+1]!==undefined){
+      const ks=p[ki+1].split(',');
+      if(ks.length){keyStart=parseInt(ks[0])||1;keyEnd=ks.length>1?parseInt(ks[1])||0:0;}
+    }
+    const file=p.find(a=>!a.startsWith('-')&&(ki<0||a!==p[ki+1])&&(ti<0||a!==p[ti+1]));
     if(!file)throw new Error('sort: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     let lines=content.split('\n').filter(Boolean);
-    if(numeric){
-      lines.sort((a,b)=>{const na=parseFloat(a),nb=parseFloat(b);
+    const keyFn=(line)=>{
+      const fields=sep?line.split(sep):line.split(/\s+/);
+      const start=Math.min(keyStart-1,fields.length-1);
+      const end=keyEnd>0?Math.min(keyEnd,fields.length):keyStart;
+      return fields.slice(start,end).join(' ');
+    };
+    lines.sort((a,b)=>{
+      const ka=keyFn(a),kb=keyFn(b);
+      if(numeric){
+        const na=parseFloat(ka),nb=parseFloat(kb);
         if(Number.isFinite(na)&&Number.isFinite(nb))return na-nb;
-        return String(a).localeCompare(String(b));});
-    }else{lines.sort((a,b)=>a.localeCompare(b));}
+      }
+      return ka.localeCompare(kb);
+    });
+    if(unique)lines=lines.filter((v,i,a)=>a.indexOf(v)===i);
     if(reverse)lines.reverse();
     return lines.join('\n');
   }
@@ -1867,14 +2060,15 @@ class BashExecutor{
     const countMode=p.includes('-c');
     const onlyDups=p.includes('-d');
     const onlyUniq=p.includes('-u');
-    const file=p.find(a=>!a.startsWith('-')&&!['-c','-d','-u'].includes(a));
+    const ignoreCase=p.includes('-i');
+    const file=p.find(a=>!a.startsWith('-')&&!['-c','-d','-u','-i'].includes(a));
     if(!file)throw new Error('uniq: 缺少文件参数');
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
     const lines=content.split('\n');
-    // 先统计每个连续相同块的次数
+    const compare=(a,b)=>ignoreCase?a.toLowerCase()===b.toLowerCase():a===b;
     const groups=[];
     for(let i=0;i<lines.length;i++){
-      if(i>0&&lines[i]===lines[i-1])groups[groups.length-1].count++;
+      if(i>0&&compare(lines[i],lines[i-1]))groups[groups.length-1].count++;
       else groups.push({line:lines[i],count:1});
     }
     const result=[];
@@ -1890,48 +2084,88 @@ class BashExecutor{
     const showLineNum=p.includes('-n');
     const invert=p.includes('-v');
     const countMode=p.includes('-c');
+    const listOnly=p.includes('-l');
+    const wholeWord=p.includes('-w');
+    const recursive=p.includes('-r')||p.includes('-R');
     const args=p.filter(a=>!a.startsWith('-'));
     if(args.length<1)throw new Error('grep: 缺少搜索模式');
     const pattern=args[0];
-    const files=args.slice(1);
-    // 支持管道：无文件参数时用 _stdin 作为输入
+    let fileArgs=args.slice(1);
     const srcs=[];
-    if(!files.length){
+    if(!fileArgs.length){
       if(!p._stdin)throw new Error('grep: 缺少文件参数');
       srcs.push(['(stdin)',p._stdin]);
     }else{
-      for(const f of files)srcs.push([f,null]);
+      // 递归模式：收集目录下所有文件
+      if(recursive){
+        const allFiles=[];
+        for(const fa of fileArgs){
+          const abs=this.vfs.resolvePath(fa);
+          try{
+            const dh=await this.vfs.getDirHandle(abs);
+            const scanDir=async(dirHandle,prefix)=>{
+              if(prefix.split('/').length>20)return;
+              for await(const[name,handle]of dirHandle.entries()){
+                const path=prefix?prefix+'/'+name:name;
+                if(handle.kind==='directory'){await scanDir(handle,path);}
+                else{allFiles.push(this.vfs.resolvePath(path).replace(/^\/sandbox\//,''));}
+              }
+            };
+            await scanDir(dh,abs.replace(/^\/sandbox\//,''));
+          }catch(e){
+            // 不是目录，当作文件处理
+            allFiles.push(fa);
+          }
+        }
+        for(const f of allFiles)srcs.push([f,null]);
+      }else{
+        for(const f of fileArgs)srcs.push([f,null]);
+      }
     }
     const flags=ignoreCase?'gi':'g';
+    let ptn=pattern;
+    if(wholeWord)ptn='\\b'+ptn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b';
     let re;
-    try{re=new RegExp(pattern,flags);}catch(e){re=new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),flags);}
-    const counts=[];const results=[];
+    try{re=new RegExp(ptn,flags);}catch(e){re=new RegExp(ptn.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),flags);}
+    const counts=[];const results=[];const matchedFiles=new Set();
     for(const [f,preset]of srcs){
       const content=preset!==null?preset:await this.vfs.readFile(this.vfs.resolvePath(f));
       const lines=content.split('\n');let cnt=0;
       lines.forEach((line,i)=>{
         const match=re.test(line);re.lastIndex=0;
-        if(match?!invert:invert){cnt++;if(!countMode){const prefix=showLineNum?(i+1)+':':'';results.push(srcs.length>1?f+':'+prefix+line:prefix+line);}}
+        if(match?!invert:invert){cnt++;if(!countMode&&!listOnly){const prefix=showLineNum?(i+1)+':':'';results.push(srcs.length>1?f+':'+prefix+line:prefix+line);}}
       });
       if(countMode)counts.push(srcs.length>1?f+':'+cnt:String(cnt));
+      if(listOnly&&cnt>0)matchedFiles.add(f);
     }
+    if(listOnly)return [...matchedFiles].join('\n')||'(无匹配)';
     if(countMode)return counts.join('\n')||'0';
     return results.join('\n')||'(无匹配)';
   }
   async _du(p){
-    const target=p.find(a=>!a.startsWith('-'))||'.';
-    const abs=this.vfs.resolvePath(target);
-    let totalSize=0,fileCount=0;
-    const scan=async(dirHandle)=>{
-      for await(const[name,handle]of dirHandle.entries()){
-        if(handle.kind==='directory'){await scan(handle);}
-        else{const f=await handle.getFile();totalSize+=f.size;fileCount++;}
-      }
-    };
-    const dh=await this.vfs.getDirHandle(abs);
-    await scan(dh);
-    const kb=Math.round(totalSize/1024);
-    return kb+'K\t'+target+' ('+fileCount+' files)';
+    const summary=p.includes('-s');
+    const human=p.includes('-h');
+    const maxDepth=p.includes('-d')?2:999; // -d 2 基本深度
+    const targets=p.filter(a=>!a.startsWith('-'));
+    const results=[];
+    for(const target of (targets.length?targets:['.'])){
+      const abs=this.vfs.resolvePath(target);
+      let totalSize=0,fileCount=0;
+      const scan=async(dirHandle,depth)=>{
+        for await(const[name,handle]of dirHandle.entries()){
+          if(handle.kind==='directory'){
+            if(depth<maxDepth)await scan(handle,depth+1);
+          }else{const f=await handle.getFile();totalSize+=f.size;fileCount++;}
+        }
+      };
+      const dh=await this.vfs.getDirHandle(abs);
+      await scan(dh,0);
+      const displaySize=human?(
+        totalSize>1048576?(totalSize/1048576).toFixed(1)+'M':totalSize>1024?(totalSize/1024).toFixed(1)+'K':totalSize+'B'
+      ):(Math.round(totalSize/1024)+'K');
+      results.push(displaySize+'\t'+target+(!summary?' ('+fileCount+' files)':''));
+    }
+    return results.join('\n');
   }
   async _tree(p){
     const target=p.find(a=>!a.startsWith('-'))||'.';
@@ -1995,7 +2229,16 @@ class BashExecutor{
     const pattern=nameIdx>=0?p[nameIdx+1]:'*';
     const typeIdx=p.indexOf('-type');
     const typeFilter=typeIdx>=0?p[typeIdx+1]:null;
-    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1])&&(typeIdx<0||a!==p[typeIdx+1]))||'.';
+    const execIdx=p.indexOf('-exec');
+    let execCmd=null;
+    let execEnd=execIdx>=0?execIdx+1:-1;
+    if(execIdx>=0){
+      for(let i=execIdx+1;i<p.length;i++){
+        if(p[i]===';'||p[i]==='\\;'){execEnd=i;break;}
+      }
+      execCmd=p.slice(execIdx+1,execEnd).filter(a=>a!==';'&&a!=='\\;');
+    }
+    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1])&&(typeIdx<0||a!==p[typeIdx+1])&&(execIdx<0||!execCmd||p.indexOf(a)>=execEnd))||'.';
     const abs=this.vfs.resolvePath(startDir);
     const regex=new RegExp('^'+pattern.replace(/\*/g,'\x00').replace(/\?/g,'\x01').replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\x00/g,'.*').replace(/\x01/g,'.')+'$');
     const results=[];
@@ -2012,6 +2255,19 @@ class BashExecutor{
     };
     const dh=await this.vfs.getDirHandle(abs);
     await scan(dh,startDir==='.'?'.':startDir,0);
+    if(execCmd&&execCmd.length){
+      // 执行 -exec 命令：替换 {} 为匹配路径
+      const execResults=[];
+      for(const r of results){
+        const cmdArgs=execCmd.map(a=>a==='{}'?r:a);
+        const cmdName=cmdArgs[0];
+        try{
+          const stdout=await this._dispatch(cmdArgs,cmdName);
+          execResults.push(stdout);
+        }catch(e){execResults.push('execute: '+e.message);}
+      }
+      return execResults.join('\n');
+    }
     return results.join('\n')||'(无匹配)';
   }
   async _cut(p,raw){
@@ -2123,17 +2379,16 @@ class BashExecutor{
   }
   _seq(p){
     let start=1,end=1,step=1;
-    if(p.length===1){end=parseInt(p[0]);}
-    else if(p.length===2){start=parseInt(p[0]);end=parseInt(p[1]);}
-    else if(p.length>=3){start=parseInt(p[0]);step=parseInt(p[1]);end=parseInt(p[2]);}
-    if(isNaN(start)||isNaN(end)||isNaN(step))throw new Error('seq: 参数必须是数字');
-    // step=0 明确报错（避免无意义迭代；旧实现静默返回空字符串造成困惑）
+    if(p.length===1){end=parseFloat(p[0]);}
+    else if(p.length===2){start=parseFloat(p[0]);end=parseFloat(p[1]);}
+    else if(p.length>=3){start=parseFloat(p[0]);step=parseFloat(p[1]);end=parseFloat(p[2]);}
+    if(!Number.isFinite(start)||!Number.isFinite(end)||!Number.isFinite(step))throw new Error('seq: 参数必须是数字');
     if(step===0)return 'seq: step 不能为 0';
-    // 限制最大输出条数，防止 seq 1 1 1 这种被解析成 end=1 时仍安全
     const MAX_SEQ=100000;
     const result=[];
-    if(step>0){for(let i=start;i<=end&&result.length<MAX_SEQ;i+=step)result.push(String(i));}
-    else if(step<0){for(let i=start;i>=end&&result.length<MAX_SEQ;i+=step)result.push(String(i));}
+    const fmt=v=>Number.isInteger(v)?String(v):String(v);
+    if(step>0){for(let i=start;i<=end&&result.length<MAX_SEQ;i+=step)result.push(fmt(i));}
+    else if(step<0){for(let i=start;i>=end&&result.length<MAX_SEQ;i+=step)result.push(fmt(i));}
     if(result.length>=MAX_SEQ)addStepMessage&&addStepMessage('⚠️ seq 输出已达上限 '+MAX_SEQ+', 已截断');
     return result.join('\n');
   }
@@ -2158,7 +2413,18 @@ class BashExecutor{
   }
   async _sed(p,raw,inPlace){
     const inPlaceFlag=inPlace===true;
-    // 分隔符动态捕获，negated-class 仅排除实际分隔符
+    // 支持 s/// 替换和 /pattern/d 删除
+    const delMatch=raw.match(/sed\s+(-i\s+)?['"]?\/([^/]+)\/d['"]?\s*(.*)/);
+    if(delMatch){
+      const[, ,pattern,file]=delMatch;
+      if(!file)throw new Error('sed: 缺少文件参数');
+      const abs=this.vfs.resolvePath(file.trim().split(/\s+/)[0]);
+      const content=await this.vfs.readFile(abs);
+      const re=new RegExp(pattern,'g');
+      const result=content.split('\n').filter(l=>!re.test(l)).join('\n');
+      if(inPlaceFlag){await this.vfs.writeFile(abs,result);return'已就地修改: '+file.trim();}
+      return result;
+    }
     const sMatch=raw.match(/sed\s+(-i\s+)?['"]?s([/|#])([^/|#]+)\2([^/|#]*)\2(g?)['"]?\s*(.*)/);
     if(!sMatch)throw new Error('sed: 用法 sed s/old/new/[g] file（需 -i 才回写文件）');
     const[, , ,oldStr,newStr,global,file]=sMatch;
@@ -2166,7 +2432,6 @@ class BashExecutor{
     const abs=this.vfs.resolvePath(file.trim().split(/\s+/)[0]);
     const content=await this.vfs.readFile(abs);
     const re=new RegExp(oldStr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),global?'g':'');
-    // 转义替换字符串中的 $ 模式（$& $` $' $$），使 sed 行为接近字面替换
     const safeNewStr=newStr.replace(/\$/g,'$$$$');
     const result=content.replace(re,safeNewStr);
     if(inPlaceFlag){await this.vfs.writeFile(abs,result);return'已就地修改: '+file.trim();}
@@ -2227,6 +2492,9 @@ class BashExecutor{
     return content.replace(/\t/g,'    ');
   }
   async _comm(p){
+    const suppress1=p.includes('-1');
+    const suppress2=p.includes('-2');
+    const suppress3=p.includes('-3');
     const files=p.filter(a=>!a.startsWith('-'));
     if(files.length<2)throw new Error('comm: 需要两个文件参数');
     const c1=await this.vfs.readFile(this.vfs.resolvePath(files[0]));
@@ -2234,53 +2502,60 @@ class BashExecutor{
     const stripTail=s=>s.endsWith('\n')?s.slice(0,-1):s;
     const l1=stripTail(c1).split('\n');
     const l2=stripTail(c2).split('\n');
-    // 提前检测未排序：comm 要求两个文件均按字典序排列，否则结果无意义
     const isSorted=a=>a.every((x,i)=>i===0||x>=a[i-1]);
-    if(!isSorted(l1)||!isSorted(l2))addStepMessage&&addStepMessage('⚠️ comm: 输入未按字典序排序，结果可能不正确，请先 sort');
-    const only1=[],only2=[],both=[];
+    if(!isSorted(l1)||!isSorted(l2))addStepMessage&&addStepMessage('⚠️ comm: 输入未按字典序排序');
+    // 三列制表符输出：col1=仅file1, col2=仅file2, col3=共有
+    const out=[];
     let i=0,j=0;
     while(i<l1.length&&j<l2.length){
-      if(l1[i]<l2[j]){only1.push(l1[i]);i++;}
-      else if(l1[i]>l2[j]){only2.push(l2[j]);j++;}
-      else{both.push(l1[i]);i++;j++;}
+      let col1='',col2='',col3='';
+      if(l1[i]<l2[j]){col1=l1[i];i++;}
+      else if(l1[i]>l2[j]){col2=l2[j];j++;}
+      else{col3=l1[i];i++;j++;}
+      if(!suppress1&&col1)out.push(col1);
+      else if(!suppress2&&col2)out.push('\t'+col2);
+      else if(!suppress3&&col3)out.push('\t\t'+col3);
+      else{
+        const parts=[];
+        if(!suppress1)parts.push(col1||'');
+        if(!suppress2)parts.push(col2||'');
+        if(!suppress3)parts.push(col3||'');
+        out.push(parts.join('\t').replace(/\t+$/,''));
+      }
     }
-    while(i<l1.length){only1.push(l1[i]);i++;}
-    while(j<l2.length){only2.push(l2[j]);j++;}
-    const result=[];
-    if(only1.length)result.push('仅在 '+files[0]+':\n'+only1.join('\n'));
-    if(only2.length)result.push('仅在 '+files[1]+':\n'+only2.join('\n'));
-    if(both.length)result.push('两者共有:\n'+both.join('\n'));
-    return result.join('\n\n')||'(两个文件相同)';
+    while(i<l1.length){if(!suppress1)out.push(l1[i]);i++;}
+    while(j<l2.length){if(!suppress2)out.push('\t'+l2[j]);j++;}
+    return out.join('\n')||'(无输出)';
   }
-  async _xargs(p,raw){
+async _xargs(p,raw){
     const cmdMatch=raw.match(/xargs\s+(.*)/);
     if(!cmdMatch)throw new Error('xargs: 用法 xargs command');
     const baseCmdStr=cmdMatch[1].trim();
     const input=p._stdin||'';
     const items=input.split('\n').filter(Boolean);
     const results=[];
-    // Parse base command args once to prevent item content (;, |, && etc) from being
-    // re-parsed as shell separators via exec(). Direct dispatch avoids injection.
-    const baseArgs=this.parseCommand(baseCmdStr);
-    if(!baseArgs.length)return '';
+    // 支持 -I replstr 模式（如 xargs -I {} cp {} dest/）
+    const iIdx=p.indexOf('-I');
+    const replStr=iIdx>=0?p[iIdx+1]||'{}':'';
+    const baseArgs=replStr?this.parseCommand(baseCmdStr.replace(new RegExp(replStr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'),'__XARGS_PLACEHOLDER__')):this.parseCommand(baseCmdStr);
+    if(!baseArgs.length)return'';
     for(const item of items){
-      const allArgs=[...baseArgs,item];
-      const itemRaw=baseCmdStr+' '+item;
-      const result=await this._dispatch(allArgs,itemRaw);
+      const allArgs=replStr?baseArgs.map(a=>a.replace(/__XARGS_PLACEHOLDER__/g,item)):[...baseArgs,item];
+      const result=await this._dispatch(allArgs,baseCmdStr);
       results.push(result);
     }
     return results.join('\n');
   }
   async _paste(p){
-    const files=p.filter(a=>!a.startsWith('-'));
+    const di=p.indexOf('-d');
+    const delim=di>=0?p[di+1]||'\t':'\t';
+    const files=p.filter(a=>!a.startsWith('-')&&(di<0||a!==p[di+1]));
     if(!files.length)throw new Error('paste: 缺少文件参数');
-    // 单文件时等同 cat（GNU 允许），避免误用门槛
     if(files.length===1){return await this.vfs.readFile(this.vfs.resolvePath(files[0]));}
-    // 多文件：逐行以 \t 拼接；行数不齐时缺列留空
     const allLines=await Promise.all(files.map(f=>this.vfs.readFile(this.vfs.resolvePath(f)).then(c=>c.split('\n'))));
     const maxLen=Math.max(...allLines.map(a=>a.length));
     const result=[];
-    for(let i=0;i<maxLen;i++)result.push(allLines.map(a=>a[i]||'').join('\t'));
+    for(let i=0;i<maxLen;i++)result.push(allLines.map(a=>a[i]||'').join(delim));
     return result.join('\n');
   }
   async _split(p){
@@ -2401,15 +2676,17 @@ class BashExecutor{
   }
   _factor(p){
     if(!p.length)throw new Error('factor: 缺少数字参数');
-    const n=parseInt(p[0]);
-    if(isNaN(n)||n<2)return p[0]+': 不是有效数字';
-    const factors=[];
-    let num=n;
-    for(let i=2;i*i<=num;i++){
-      while(num%i===0){factors.push(i);num/=i;}
+    const results=[];
+    for(const arg of p){
+      const n=parseInt(arg,10);
+      if(!Number.isFinite(n)||n<2){results.push(arg+': 不是有效数字');continue;}
+      const factors=[];
+      let num=n;
+      for(let i=2;i*i<=num;i++){while(num%i===0){factors.push(i);num/=i;}}
+      if(num>1)factors.push(num);
+      results.push(n+': '+factors.join(' '));
     }
-    if(num>1)factors.push(num);
-    return n+': '+factors.join(' ');
+    return results.join('\n');
   }
   async _fmt(p){
     const widthIdx=p.indexOf('-w');
