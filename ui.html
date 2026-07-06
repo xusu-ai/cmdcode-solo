@@ -304,8 +304,8 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
             <option value="opencode-go4">OpenCode Go 套餐 5</option>
           </optgroup>
           <optgroup label="— MiniMax 手动指定 —">
-            <option value="minimax1">MiniMax 套餐 2</option>
-            <option value="minimax2">MiniMax 套餐 3</option>
+            <option value="minimax1" disabled>MiniMax 套餐 2（已过期）</option>
+            <option value="minimax2" disabled>MiniMax 套餐 3（已过期）</option>
           </optgroup>
         </select>
       </div>
@@ -320,9 +320,9 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
       <div class="settings-row">
         <div class="settings-label"><i class="fas fa-server"></i> 多模态供应商</div>
         <select class="settings-select" id="mmProvider">
-          <option value="minimax">MiniMax 多模态（3 密钥自动轮换）</option>
-          <option value="minimax1">MiniMax 多模态套餐 2</option>
-          <option value="minimax2">MiniMax 多模态套餐 3</option>
+          <option value="minimax">MiniMax 密钥（已开图/TTS权限）</option>
+          <option value="minimax1" disabled>MiniMax 套餐 2（已过期）</option>
+          <option value="minimax2" disabled>MiniMax 套餐 3（已过期）</option>
         </select>
       </div>
       <div class="settings-row">
@@ -410,14 +410,14 @@ const PROVIDER_INFO={
   'minimax':'3 个 MiniMax 套餐密钥轮换，支持 MiniMax-M 系列多模态模型。适用于图片/视频/音乐生成；亦可用作文字 chat 接口（接口路径与 OpenCode Go 不同）。',
 };
 // 合法 chat 供应商全集：5 opencode-go* + 3 minimax*
-const VALID_CHAT_PROVIDERS=new Set(['opencode-go','opencode-go1','opencode-go2','opencode-go3','opencode-go4','minimax','minimax1','minimax2']);
+const VALID_CHAT_PROVIDERS=new Set(['opencode-go','opencode-go1','opencode-go2','opencode-go3','opencode-go4','minimax']);
 let CHAT_PROVIDER=localStorage.getItem('cmdcode_provider')||'opencode-go';
 // 历史遗留值归一化（仅拒绝不存在的供应商，不动用户在合法集内的选择）
 if(!VALID_CHAT_PROVIDERS.has(CHAT_PROVIDER)){CHAT_PROVIDER='opencode-go';localStorage.setItem('cmdcode_provider','opencode-go');}
 let CHAT_MODEL=localStorage.getItem('cmdcode_model')||'deepseek-v4-flash';
 let MM_PROVIDER=localStorage.getItem('cmdcode_mm_provider')||'minimax';
-// minimax 系列已扩展到 minimax/minimax1/minimax2 三个供应商；其他遗留值归一为 minimax
-if(MM_PROVIDER!=='minimax'&&MM_PROVIDER!=='minimax1'&&MM_PROVIDER!=='minimax2'){MM_PROVIDER='minimax';localStorage.setItem('cmdcode_mm_provider','minimax');}
+// minimax 密钥已包含图/TTS权限；其他过期密钥不再使用
+if(MM_PROVIDER!=='minimax'){MM_PROVIDER='minimax';localStorage.setItem('cmdcode_mm_provider','minimax');}
 let MM_MODEL=localStorage.getItem('cmdcode_mm_model')||'MiniMax-M3';
 let accessToken='';  // 从服务器端获取，不硬编码在前端
 let isRunning=false;
@@ -965,7 +965,7 @@ const ALL_TOOLS=[
   {type:'function',function:{name:'retrieve_file_content',description:'下载MiniMax平台上的文件内容（直接返回二进制数据）。通过 file_id 下载文件并保存到本地。',parameters:{type:'object',properties:{file_id:{type:'string',description:'需要下载的文件ID'}},required:['file_id']}}},
   {type:'function',function:{name:'delete_file',description:'删除MiniMax平台上的已上传文件。需要指定 file_id 和文件用途。',parameters:{type:'object',properties:{file_id:{type:'string',description:'要删除的文件ID'},purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async','t2a_async_input','video_generation'],description:'文件用途'}},required:['file_id','purpose']}}},
   {type:'function',function:{name:'list_files',description:'列出MiniMax平台上的已上传文件。按用途分类查看，返回文件ID、文件名、大小等。',parameters:{type:'object',properties:{purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async_input'],description:'文件分类'}},required:['purpose']}}},
-  {type:'function',function:{name:'music_generation',description:'生成音乐或歌曲，返回音频URL。支持精细控制：曲风、情绪、乐器、速度、调性等。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（如：轻快爵士风格，夏天的海边）'},lyrics:{type:'string',description:'歌词（可选，不填则纯音乐）'},instrumental:{type:'boolean',description:'纯音乐（无歌词，与lyrics互斥）',default:false},lyrics_optimizer:{type:'boolean',description:'自动生成歌词（与lyrics/instrumental互斥）',default:false},genre:{type:'string',description:'曲风（如：folk, pop, jazz, rock, classical, electronic, rnb, hiphop）'},mood:{type:'string',description:'情绪/氛围（如：warm, melancholic, uplifting, dark, dreamy）'},vocals:{type:'string',description:'人声风格（如：warm male baritone, bright female soprano）'},instruments:{type:'string',description:'主要乐器（如：acoustic guitar, piano, strings）'},tempo:{type:'string',description:'速度描述（如：fast, slow, moderate）'},bpm:{type:'integer',description:'精确BPM数值（如95, 120）'},key:{type:'string',description:'调性（如：C major, A minor）'}},required:['prompt']}}},
+  {type:'function',function:{name:'music_generation',description:'生成音乐，返回音频URL。纯音乐用 instrumental:true；有歌词用 lyrics；自动写词用 lyrics_optimizer:true。常用曲风：folk, pop, jazz, rock, classical, electronic, rnb, hiphop。情感：warm, melancholic, uplifting, dark, dreamy。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（纯音乐必填，最长2000字符）'},lyrics:{type:'string',description:'歌词（非纯音乐必填，用\\n换行，支持[Verse][Chorus]等标签）'},instrumental:{type:'boolean',description:'纯音乐（无人声，true时lyrics非必填）',default:false},lyrics_optimizer:{type:'boolean',description:'根据prompt自动生成歌词',default:false},genre:{type:'string',description:'曲风'},mood:{type:'string',description:'情绪'},vocals:{type:'string',description:'人声风格'},instruments:{type:'string',description:'主要乐器'},tempo:{type:'string',description:'速度'},bpm:{type:'integer',description:'BPM数值'},key:{type:'string',description:'调性'}},required:[]}}},
   {type:'function',function:{name:'text_to_speech',description:'语音合成(TTS)：将文本转为语音，返回音频文件保存路径。支持情感控制、多音字纠正、字幕生成。默认音色：少女(默认), 御姐, 可爱, 甜美, 青年男声, 少帅, 磁性, 知性, 精品男声, 精品女声。',parameters:{type:'object',properties:{text:{type:'string',description:'要朗读的文本（最长3000字符）'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',description:'语速（0.5-2.0，默认1.0）',minimum:0.5,maximum:2.0,default:1.0},vol:{type:'number',description:'音量（0-2，默认1.0）',minimum:0,maximum:2,default:1.0},pitch:{type:'number',description:'音调（-12到12，默认0）',minimum:-12,maximum:12,default:0},emotion:{type:'string',description:'情感（如：happy, sad, angry, surprised, excited, calm 等）'},pronunciation:{type:'string',description:'多音字纠正，格式：词/(拼音)，多个用分号分隔，如：处理/(chu3)(li3);行/xing'},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
   {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。仅支持以下50个命令，不支持任何其他命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等。禁止在根目录创建文件，必须使用 files/ images/ project/ 等子目录。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令（仅限上述50个）'}},required:['command']}}},
   {type:'function',function:{name:'read',description:'读取文件内容。登录用户访问个人文件夹，访客访问 guest/ 文件夹。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},offset:{type:'integer',description:'起始行号'},limit:{type:'integer',description:'读取行数'}},required:['file_path']}}},
@@ -1312,8 +1312,16 @@ async function syncServerAndOPFS(){
       const res=await apiCall('list_files',{path:dir},{ignoreStop:true});
       for(const e of(res.files||[])){
         if(!e||!e.path)continue;
-        if(e.is_dir)await listServer(e.path,depth+1);
-        else serverRawFiles.push({path:e.path,mtime:e.mtime||'',size:e.size!=null?Number(e.size):-1});
+        let sz=e.size;
+        if(sz!=null){sz=Number(sz);if(!Number.isFinite(sz)||sz<0)sz=-1;}
+        else sz=-1;
+        if(e.is_dir===true||e.is_dir===1||e.is_dir==='1'||e.is_dir==='true'){
+          await listServer(e.path,depth+1);
+        }else if(e.is_dir===false||e.is_dir===0||e.is_dir==='0'||e.is_dir==='false'){
+          serverRawFiles.push({path:e.path,mtime:e.mtime||'',size:sz});
+        }else{
+          serverRawFiles.push({path:e.path,mtime:e.mtime||'',size:sz});
+        }
       }
     }
     await listServer('');
@@ -1419,7 +1427,8 @@ async function syncServerAndOPFS(){
       const w=await fh.createWritable();await w.write(buf);await w.close();
     }else{
       const res=await apiCall('file_read',{file_path:srcPath},{ignoreStop:true});
-      if(!res||res.content===undefined)throw new Error('服务器返回空内容');
+      if(!res||res.content===undefined)throw new Error('服务器响应异常');
+      if(res.content===null)throw new Error('文件不存在');
       await _fileSystem.writeFile(_fileSystem.resolvePath(f),res.content,false,true);
     }
   }
@@ -1466,12 +1475,21 @@ async function syncServerAndOPFS(){
       const sInfo=serverFileMap.get(f);
       const oInfo=opfsFileMap.get(f);
       if(!sInfo||!oInfo)continue;
-      const sTime=sInfo.mtime?new Date(sInfo.mtime.replace(' ','T')+'+08:00').getTime()||0:0;
-      const oTime=oInfo.mtime||0;
+      // 解析时间戳，对异常格式做兜底
+      let sTime=0;
+      if(sInfo.mtime){
+        try{const t=new Date(sInfo.mtime.replace(' ','T')+'+08:00').getTime();if(Number.isFinite(t))sTime=t;}catch(e){}
+      }
+      const oTimeRaw=Number(oInfo.mtime);
+      const oTime=Number.isFinite(oTimeRaw)&&oTimeRaw>0?oTimeRaw:0;
       const sSize=sInfo.size>=0?sInfo.size:-1;
       const oSize=oInfo.size>=0?oInfo.size:-1;
-      // 时间戳相近（差值在60s内）且大小一致（或一方 size 未知）→ 跳过，避免反复上传下载相同内容
-      if(Math.abs(sTime-oTime)<=60000&&(sSize<0||oSize<0||sSize===oSize)){skippedSame++;continue;}
+      // 边界：大小一致 + (时间戳差距≤2分钟 OR 时间戳相等 OR 任一方时间戳无效)
+      const sizeMatch=(sSize<0||oSize<0||sSize===oSize);
+      const timeClose=Math.abs(sTime-oTime)<=120000; // 2分钟
+      const timeEqual=sTime===oTime;
+      const timeInvalid=sTime===0||oTime===0;
+      if(sizeMatch&&(timeClose||timeEqual||timeInvalid)){skippedSame++;continue;}
       if(sTime>oTime){
         try{
           const srcPath=serverDedupedMap.get(f)||f;
@@ -1479,12 +1497,28 @@ async function syncServerAndOPFS(){
           pulled++;toPullUpdate++;
           addStepMessage('⬇ '+f);
         }catch(e){failedFiles.push({file:f,action:'拉取(更新)',error:e.message});}
+      }else if(oTime>sTime){
+        // 推送前先检查文件是否真的在 OPFS 中存在（避免迁移后旧路径失效）
+        let fileExists=false;
+        try{await _fileSystem.getFileHandle(_fileSystem.resolvePath(f));fileExists=true;}catch(e){fileExists=false;}
+        if(!fileExists){
+          // OPFS 中已不存在 → 改为从服务器拉取而非推送
+          try{
+            const srcPath=serverDedupedMap.get(f)||f;
+            await pullFile(f,srcPath);
+            pulled++;toPullUpdate++;
+            addStepMessage('⬇ '+f+' (本地已丢失，改为拉取)');
+          }catch(e){failedFiles.push({file:f,action:'拉取(本地丢失)',error:e.message});}
+        }else{
+          try{
+            await pushFile(f);
+            pushed++;toPushUpdate++;
+            addStepMessage('⬆ '+f);
+          }catch(e){failedFiles.push({file:f,action:'推送(更新)',error:e.message});}
+        }
       }else{
-        try{
-          await pushFile(f);
-          pushed++;toPushUpdate++;
-          addStepMessage('⬆ '+f);
-        }catch(e){failedFiles.push({file:f,action:'推送(更新)',error:e.message});}
+        // 大小不一致但时间戳相等 → 跳过（无法判断最新）
+        skippedSame++;
       }
     }
     if(toPullUpdate>0||toPushUpdate>0||skippedSame>0){
@@ -1529,7 +1563,7 @@ async function syncServerAndOPFS(){
         addStepMessage('✓ '+f);
       }catch(e){
         // 区分：本地读取失败 → 清理幽灵文件；网络/服务器错误 → 计入失败
-        const isLocalError=/not (be )?found|Could not find|getFileHandle/i.test(e.message);
+        const isLocalError=/not (be )?found|Could not find|getFileHandle|TypeMismatchError|NotFoundError/i.test(e.message)||e.name==='NotFoundError'||e.name==='TypeMismatchError';
         if(isLocalError){
           addStepMessage('  🧹 清理幽灵文件: '+f);
           try{await _fileSystem.deleteEntry(_fileSystem.resolvePath(f),{recursive:true});}catch(e2){}
@@ -3043,9 +3077,13 @@ async image_generation(args,ctx){
   },
   async music_generation(args,ctx){
     if(_musicQuotaExhausted)return '音乐生成暂时不可用（所有 MiniMax API Key 的今日配额已用尽，将于午夜 UTC+8 重置）';
-    if(!args.prompt&&!args.genre&&!args.mood&&!args.vocals&&!args.instruments)return '音乐生成失败: 缺少 prompt 或 genre/mood 等描述参数';
+    const hasLyrics=!!(args.lyrics||'').trim();
+    const hasOptimizer=!!args.lyrics_optimizer;
+    const isInst=!!args.instrumental;
+    if(!args.prompt&&!hasLyrics&&!isInst)return '音乐生成失败: 请提供 prompt（音乐描述）或 lyrics（歌词）';
+    if(args.prompt&&args.prompt.length>2000)return '音乐生成失败: prompt 过长（上限2000字符）';
+    if(hasLyrics&&args.lyrics.length>3500)return '音乐生成失败: lyrics 过长（上限3500字符）';
     try{
-    // 官方 SDK 做法：genre/mood/vocals 等结构化参数折叠进 prompt
     const structured=[];
     if(args.genre)structured.push('Genre: '+args.genre);
     if(args.mood)structured.push('Mood: '+args.mood);
@@ -3055,17 +3093,24 @@ async image_generation(args,ctx){
     if(args.bpm)structured.push('BPM: '+args.bpm);
     if(args.key)structured.push('Key: '+args.key);
     const fullPrompt=structured.length>0?(args.prompt?args.prompt+'. '+structured.join('. '):structured.join('. ')):(args.prompt||'');
-    const body={model:'music-2.6',prompt:fullPrompt};if(args.lyrics)body.lyrics=args.lyrics;if(args.instrumental)body.is_instrumental=true;else if(!args.lyrics&&!args.lyrics_optimizer)body.is_instrumental=true;if(args.lyrics_optimizer)body.lyrics_optimizer=true;body.audio_setting={format:'mp3',sample_rate:44100,bitrate:256000};body.output_format='url';
-    // 与 video 一致：Key 耗尽时自动重试（最多重试 2 次，共提交 3 次）
+    // 选择免费模型，AI可自行切换为 music-2.6 如需付费版
+    const body={model:'music-2.6-free',prompt:fullPrompt};
+    if(hasLyrics){body.lyrics=args.lyrics;body.is_instrumental=false;}
+    if(isInst)body.is_instrumental=true;
+    // 非纯音乐、无歌词、无优化器 → 自动写词
+    // music-2.6-free 不稳定支持 output_format，去掉让它用默认值（hex）
+    // 也去掉 audio_setting，MiniMax 使用默认参数
+    if(!isInst&&!hasLyrics&&!hasOptimizer){body.lyrics_optimizer=true;}
+    if(hasOptimizer||body.lyrics_optimizer===true)body.lyrics_optimizer=true;
+    if(args.aigc_watermark)body.aigc_watermark=true;
+    addStepMessage('🎵 正在生成音乐'+(isInst?'（纯音乐）':body.lyrics_optimizer?'（自动写词）':'（有歌词）')+'...');
     for(let retry=0;retry<3;retry++){
     if(stopRequested)return '操作已取消';
-    // Step 1: 异步创建音乐任务（proxy.php 立即返回 task_id，后台 worker 慢慢等 MiniMax）
     const createResp=await proxyRequest(MM_PROVIDER,'/music_generation',body,30000);
-    if(createResp.error&&retry<2){addStepMessage('🔄 Key 耗尽，重试提交音乐任务...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
+    if(createResp.error&&retry<2){addStepMessage('🔄 提交失败'+createResp.message.slice(0,80)+'，重试...');await interruptibleSleep(5000);if(stopRequested)return '操作已取消';continue;}
     if(createResp.error)return '音乐生成启动失败: '+createResp.message;
     const taskId=createResp.task_id;
     if(!taskId)return '音乐生成失败：未获取到任务ID';
-    // Step 2: 轮询等待结果（最多等 180s，避免 504）
     const start=Date.now();
     const MAX_WAIT=180000;
     let delay=3000;
@@ -3075,11 +3120,10 @@ async image_generation(args,ctx){
       if(stopRequested)return '操作已取消';
       const pollResp=await proxyRequest(MM_PROVIDER,'/music_poll',{task_id:taskId},15000);
       if(pollResp.status==='pending'){delay=Math.min(delay*1.5,10000);continue;}
-      // 有结果了（成功或失败）
       lastResp=pollResp;
       break;
     }
-    if(!lastResp){if(retry<2){addStepMessage('🔄 音乐生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '音乐生成超时（3分钟），请稍后重试';}
+    if(!lastResp){if(retry<2){addStepMessage('🔄 生成超时，重新提交...');await interruptibleSleep(3000);if(stopRequested)return '操作已取消';continue;}return '音乐生成超时（3分钟），请稍后重试';}
     if(lastResp.error){
       if(lastResp.error==='all_keys_exhausted'||lastResp.error==='proxy_all_keys_exhausted'){
         _musicQuotaExhausted=true;
@@ -3093,7 +3137,7 @@ async image_generation(args,ctx){
     const url=lastResp.audio_url||lastResp.data?.audio_url||lastResp.data?.audio||'';
     if(url){const f=await saveMediaToUser(url,'music');if(f){addAgentMessage('📁 已保存: '+f,'music');const su=await getShareUrl(f);if(su)return su;}return url;}
     return '音乐生成失败，请检查输入描述或稍后重试';
-    } // end retry loop
+    }
     return '音乐生成失败，多次重试后未获取到有效结果';
     }catch(e){if(e.name==='AbortError')throw e;return '音乐生成出错: '+e.message;}
   },

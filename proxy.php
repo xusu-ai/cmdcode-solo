@@ -1562,26 +1562,83 @@ if ($api_path === '/image_process') {
 //     必须用 fastcgi_finish_request 在同一进程里"去前台后处理"
 
 if ($api_path === '/music_generation') {
-    $taskId = bin2hex(random_bytes(8)); // 16 字节 hex
+    $taskId = bin2hex(random_bytes(8));
     $taskDir = '/vhost/tmp/music_tasks';
     if (!is_dir($taskDir)) {
         @mkdir($taskDir, 0755, true);
     }
 
-    // 保存请求参数和 provider 信息
     $taskData = [
         'provider' => $provider_name,
         'input' => $input,
     ];
     file_put_contents("$taskDir/$taskId.params", serialize($taskData));
 
-    // 立即返回 task_id，前端轮询
     header('Content-Type: application/json');
     echo json_encode([
         'task_id' => $taskId,
         'status' => 'processing',
         'message' => '音乐生成已提交',
     ]);
+
+    // fastcgi_finish_request: 关闭 nginx 连接（防 30s 超时），PHP 继续后台处理
+    $bgProcess = function() use ($taskId, $taskDir, $taskData, $PROVIDERS) {
+        $taskProvConfig = $PROVIDERS[$taskData['provider']] ?? null;
+        if (!$taskProvConfig) { @unlink("$taskDir/$taskId.params"); return; }
+        $taskKeys = $taskProvConfig['keys'];
+        $taskBaseUrl = rtrim($taskProvConfig['base_url'], '/');
+        $musicUrl = $taskBaseUrl . '/music_generation';
+        $originalInput = $taskData['input'];
+        // 确保使用 url 格式
+        if (!isset($originalInput['output_format'])) {
+            $originalInput['output_format'] = 'url';
+        }
+        $last_error = '';
+        $result = null;
+        foreach ($taskKeys as $idx => $key) {
+            if (empty($key)) continue;
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $musicUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 180,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $key,
+                ],
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($originalInput),
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($error) { $last_error = $error; continue; }
+            if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+            $result = ['http_code' => $http_code, 'body' => $response];
+            break;
+        }
+        if ($result) {
+            $bodyData = json_decode($result['body'], true);
+            $output = $bodyData ?: ['raw' => $result['body']];
+            $output['_http_code'] = $result['http_code'];
+            file_put_contents("$taskDir/$taskId.result", json_encode($output));
+            @unlink("$taskDir/$taskId.params");
+        } else {
+            file_put_contents("$taskDir/$taskId.result", json_encode([
+                'error' => 'proxy_all_keys_exhausted',
+                'message' => '所有 API Key 均已耗尽: ' . $last_error,
+            ]));
+        }
+    };
+
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+        $bgProcess();
+    }
+    // fallback: 无 fastcgi_finish_request → 文件排队等 cron 轮询
     exit;
 }
 
@@ -1890,7 +1947,6 @@ if ($api_path === '/video_submit') {
     if (!is_dir($VIDEO_TASK_DIR)) {
         @mkdir($VIDEO_TASK_DIR, 0755, true);
     }
-    // 保存 provider 信息和请求参数
     $taskData = [
         'provider' => $provider_name,
         'input' => $input,
@@ -1902,6 +1958,62 @@ if ($api_path === '/video_submit') {
         'status' => 'processing',
         'message' => '视频生成已提交',
     ]);
+
+    // fastcgi_finish_request: 关闭 nginx 连接（防 30s 超时），PHP 继续后台处理
+    $videoBgProcess = function() use ($taskId, $VIDEO_TASK_DIR, $taskData, $PROVIDERS) {
+        $taskProvConfig = $PROVIDERS[$taskData['provider']] ?? null;
+        if (!$taskProvConfig) { @unlink("$VIDEO_TASK_DIR/$taskId.params"); return; }
+        $taskKeys = $taskProvConfig['keys'];
+        $taskBaseUrl = rtrim($taskProvConfig['base_url'], '/');
+        $videoUrl = $taskBaseUrl . '/video_generation';
+        $originalInput = $taskData['input'];
+        $last_error = '';
+        $result = null;
+        foreach ($taskKeys as $idx => $key) {
+            if (empty($key)) continue;
+            $cleanInput = array_intersect_key($originalInput, array_flip(['model','prompt','first_frame_image','last_frame_image','subject_reference']));
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $videoUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 180,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $key,
+                ],
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($cleanInput),
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($error) { $last_error = $error; continue; }
+            if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+            $result = ['http_code' => $http_code, 'body' => $response];
+            break;
+        }
+        if ($result) {
+            $bodyData = json_decode($result['body'], true);
+            $output = $bodyData ?: ['raw' => $result['body']];
+            $output['_http_code'] = $result['http_code'];
+            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
+            @unlink("$VIDEO_TASK_DIR/$taskId.params");
+        } else {
+            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
+                'error' => 'proxy_all_keys_exhausted',
+                'message' => '所有 API Key 均已耗尽: ' . $last_error,
+            ]));
+        }
+    };
+
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+        $videoBgProcess();
+    }
+    // fallback: 文件排队等 cron 轮询
     exit;
 }
 
