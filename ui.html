@@ -8,7 +8,7 @@
 <meta http-equiv="Expires" content="0">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://api.minimax.chat https://opencode.ai; img-src 'self' data: https: http:; font-src 'self' data:; media-src 'self' https:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src 'self' https://api.minimax.chat https://opencode.ai http://quan.suning.com; img-src 'self' data: https: http:; font-src 'self' data:; media-src 'self' https:;">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <title>CmdCode Agent</title>
@@ -967,7 +967,7 @@ const ALL_TOOLS=[
   {type:'function',function:{name:'list_files',description:'列出MiniMax平台上的已上传文件。按用途分类查看，返回文件ID、文件名、大小等。',parameters:{type:'object',properties:{purpose:{type:'string',enum:['voice_clone','prompt_audio','t2a_async_input'],description:'文件分类'}},required:['purpose']}}},
   {type:'function',function:{name:'music_generation',description:'生成音乐，返回音频URL。纯音乐用 instrumental:true；有歌词用 lyrics；自动写词用 lyrics_optimizer:true。常用曲风：folk, pop, jazz, rock, classical, electronic, rnb, hiphop。情感：warm, melancholic, uplifting, dark, dreamy。',parameters:{type:'object',properties:{prompt:{type:'string',description:'音乐描述（纯音乐必填，最长2000字符）'},lyrics:{type:'string',description:'歌词（非纯音乐必填，用\\n换行，支持[Verse][Chorus]等标签）'},instrumental:{type:'boolean',description:'纯音乐（无人声，true时lyrics非必填）',default:false},lyrics_optimizer:{type:'boolean',description:'根据prompt自动生成歌词',default:false},genre:{type:'string',description:'曲风'},mood:{type:'string',description:'情绪'},vocals:{type:'string',description:'人声风格'},instruments:{type:'string',description:'主要乐器'},tempo:{type:'string',description:'速度'},bpm:{type:'integer',description:'BPM数值'},key:{type:'string',description:'调性'}},required:[]}}},
   {type:'function',function:{name:'text_to_speech',description:'语音合成(TTS)：将文本转为语音，返回音频文件保存路径。支持情感控制、多音字纠正、字幕生成。默认音色：少女(默认), 御姐, 可爱, 甜美, 青年男声, 少帅, 磁性, 知性, 精品男声, 精品女声。',parameters:{type:'object',properties:{text:{type:'string',description:'要朗读的文本（最长3000字符）'},voice_id:{type:'string',enum:['female-shaonv','female-yu-xiangan','female-jianai','female-tianmei','male-qn-qingse','male-shaoshuai','male-zhixing','female-zhixing','male-jingpin','female-jingpin'],default:'female-shaonv'},speed:{type:'number',description:'语速（0.5-2.0，默认1.0）',minimum:0.5,maximum:2.0,default:1.0},vol:{type:'number',description:'音量（0-2，默认1.0）',minimum:0,maximum:2,default:1.0},pitch:{type:'number',description:'音调（-12到12，默认0）',minimum:-12,maximum:12,default:0},emotion:{type:'string',description:'情感（如：happy, sad, angry, surprised, excited, calm 等）'},pronunciation:{type:'string',description:'多音字纠正，格式：词/(拼音)，多个用分号分隔，如：处理/(chu3)(li3);行/xing'},subtitle_enable:{type:'boolean',description:'是否生成字幕文件',default:false}},required:['text']}}},
-  {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。仅支持以下50个命令，不支持任何其他命令：ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。不支持less/more/printf/env/fold/chmod/chown/ln/tar/zip/curl/wget等。禁止在根目录创建文件，必须使用 files/ images/ project/ 等子目录。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令（仅限上述50个）'}},required:['command']}}},
+  {type:'function',function:{name:'bash',description:'在浏览器沙箱中执行文件操作命令。支持 cp -r(递归复制), mv 目录(自动处理), rm -R/-f, find -exec(执行), cp/mv/ls/grep 通配符*?。目录操作: cp -r src/ dst/, mv dir1/ dir2/, mkdir -p a/b。文本: cat -n(行号), grep -r(递归)/-l(仅文件名)/-w(整词)/-l, sort -k(字段)/-t(分隔符)/-u, uniq -i, wc -L(最长行)/-m(字符)/-c(字节)/-w(词)/-l(行), head/tail -c(字节), sed s///g /pattern/d/p, diff, comm -1/-2/-3, paste -d。仅支持以下50个命令: ls, cat, head, tail, wc, sort, uniq, grep, echo, mkdir, rm, rmdir, pwd, cd, touch, cp, mv, du, tree, basename, dirname, diff, find, cut, tr, nl, tac, seq, rev, stat, sed, tee, file, realpath, expand, comm, xargs, paste, split, strings, readlink, mktemp, od, xxd, yes, factor, fmt, csplit, unexpand, join。',parameters:{type:'object',properties:{command:{type:'string',description:'要执行的命令'}},required:['command']}}},
   {type:'function',function:{name:'read',description:'读取文件内容。登录用户访问个人文件夹，访客访问 guest/ 文件夹。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},offset:{type:'integer',description:'起始行号'},limit:{type:'integer',description:'读取行数'}},required:['file_path']}}},
   {type:'function',function:{name:'write',description:'创建或覆盖文件。必须根据内容类型选择路径：图片→images/，音乐/音频→music/，语音→voice/，代码/项目→project/，文档→files/，临时→tmp/，游戏数据→mud/，记忆→memory/。禁止在根目录创建文件。大文件修改优先用 edit 工具。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径。如 images/logo.png、project/calc.py'},content:{type:'string',description:'要写入的内容'}},required:['file_path','content']}}},
   {type:'function',function:{name:'edit',description:'编辑文件的指定部分。登录用户编辑个人文件夹文件，访客编辑 guest/ 文件夹文件。对于修改大文件中的特定段落，此工具比 write 更高效。',parameters:{type:'object',properties:{file_path:{type:'string',description:'文件路径'},old_string:{type:'string',description:'要替换的原始文本'},new_string:{type:'string',description:'替换后的新文本'},replace_all:{type:'boolean',description:'是否替换所有匹配项',default:false}},required:['file_path','old_string','new_string']}}},
@@ -1296,11 +1296,29 @@ function dedupPath(path){
   const result=parts.join('/');
   return isAbs?'/'+result:result;
 }
+// 获取互联网标准东八区北京时间（用于检测服务器时钟偏差）
+async function fetchBeijingTime(){
+  try{
+    const ctrl=new AbortController();const tmr=setTimeout(()=>ctrl.abort(),3000);
+    const r=await fetch('http://quan.suning.com/getSysTime.do',{signal:ctrl.signal});
+    clearTimeout(tmr);
+    const d=await r.json();
+    if(d&&d.sysTime2){
+      const t=new Date(d.sysTime2.replace(' ','T')+'+08:00').getTime();
+      if(Number.isFinite(t)&&t>0)return t;
+    }
+  }catch(e){}
+  return 0;
+}
 async function syncServerAndOPFS(){
   if(_syncing){addStepMessage('⚠️ 同步正在进行中，请等待完成');return;}
   if(!await _ensureFS()){throw new Error('OPFS 不可用，请使用支持 OPFS 的现代浏览器');}
   _syncing=true;
   let pulled=0,pushed=0,deletedFromServer=0,failedFiles=[];
+  const justPulled=new Set();
+  // 获取网络标准北京时间（用于检测服务器时钟偏差）
+  const beijingRef=await fetchBeijingTime();
+  if(beijingRef>0)addStepMessage('🕐 北京时间校准中...');
   try{
   addStepMessage('🔄 开始同步... [sync v11]');
   
@@ -1458,7 +1476,10 @@ async function syncServerAndOPFS(){
       const srcPath=serverDedupedMap.get(f)||f;
       try{
         await pullFile(f,srcPath);
-        pulled++;
+        pulled++;justPulled.add(f);
+        // 拉取后以服务器 mtime 为准，避免 OPFS 自动赋当前时间导致下次循环推送
+        const sInfo=serverFileMap.get(f);
+        if(sInfo)opfsFileMap.set(f,{path:f,mtime:sInfo.mtime,size:sInfo.size});
         addStepMessage('✓ '+f);
       }catch(e){
         failedFiles.push({file:f,action:'拉取',error:e.message});
@@ -1475,10 +1496,17 @@ async function syncServerAndOPFS(){
       const sInfo=serverFileMap.get(f);
       const oInfo=opfsFileMap.get(f);
       if(!sInfo||!oInfo)continue;
-      // 解析时间戳，对异常格式做兜底
+      // 解析时间戳：服务器按东八区北京时间，OPFS 按 UTC 标准
+      // 两者都通过 getTime() 转为 UTC 毫秒数后直接对比，与时区无关
       let sTime=0;
       if(sInfo.mtime){
         try{const t=new Date(sInfo.mtime.replace(' ','T')+'+08:00').getTime();if(Number.isFinite(t))sTime=t;}catch(e){}
+      }
+      // 用互联网授时北京时间检测服务器时钟偏差
+      // 如果服务器 mtime 与北京时间偏差超过 24 小时 → 服务器时钟有误，sTime 降级为无效
+      if(beijingRef>0&&sTime>0&&Math.abs(sTime-beijingRef)>86400000){
+        addStepMessage('  ⏭ '+f+' 服务器时钟异常，跳过时间比对');
+        sTime=0;
       }
       const oTimeRaw=Number(oInfo.mtime);
       const oTime=Number.isFinite(oTimeRaw)&&oTimeRaw>0?oTimeRaw:0;
@@ -1486,7 +1514,7 @@ async function syncServerAndOPFS(){
       const oSize=oInfo.size>=0?oInfo.size:-1;
       // 边界：大小一致 + (时间戳差距≤2分钟 OR 时间戳相等 OR 任一方时间戳无效)
       const sizeMatch=(sSize<0||oSize<0||sSize===oSize);
-      const timeClose=Math.abs(sTime-oTime)<=120000; // 2分钟
+      const timeClose=Math.abs(sTime-oTime)<=3600000; // 1小时
       const timeEqual=sTime===oTime;
       const timeInvalid=sTime===0||oTime===0;
       if(sizeMatch&&(timeClose||timeEqual||timeInvalid)){skippedSame++;continue;}
@@ -1494,10 +1522,14 @@ async function syncServerAndOPFS(){
         try{
           const srcPath=serverDedupedMap.get(f)||f;
           await pullFile(f,srcPath);
-          pulled++;toPullUpdate++;
+          pulled++;toPullUpdate++;justPulled.add(f);
+          const sInfo=serverFileMap.get(f);
+          if(sInfo)opfsFileMap.set(f,{path:f,mtime:sInfo.mtime,size:sInfo.size});
           addStepMessage('⬇ '+f);
         }catch(e){failedFiles.push({file:f,action:'拉取(更新)',error:e.message});}
       }else if(oTime>sTime){
+        // 跳过本轮刚拉取的文件（OPFS mtime ≠ 服务端 mtime，直接推送会循环重传）
+        if(justPulled.has(f)){skippedSame++;continue;}
         // 推送前先检查文件是否真的在 OPFS 中存在（避免迁移后旧路径失效）
         let fileExists=false;
         try{await _fileSystem.getFileHandle(_fileSystem.resolvePath(f));fileExists=true;}catch(e){fileExists=false;}
@@ -1506,7 +1538,9 @@ async function syncServerAndOPFS(){
           try{
             const srcPath=serverDedupedMap.get(f)||f;
             await pullFile(f,srcPath);
-            pulled++;toPullUpdate++;
+            pulled++;toPullUpdate++;justPulled.add(f);
+            const sInfo=serverFileMap.get(f);
+            if(sInfo)opfsFileMap.set(f,{path:f,mtime:sInfo.mtime,size:sInfo.size});
             addStepMessage('⬇ '+f+' (本地已丢失，改为拉取)');
           }catch(e){failedFiles.push({file:f,action:'拉取(本地丢失)',error:e.message});}
         }else{
@@ -1632,7 +1666,7 @@ class BashExecutor{
           current=current.map(p=>p+seg+'/');
           continue;
         }
-        const regex=new RegExp('^'+seg.replace(/\./g,'\\.').replace(/\*/g,'.*').replace(/\?/g,'.').replace(/\[([^\]]+)\]/g,'[$1]')+'$');
+        const regex=new RegExp('^'+seg.replace(/\[!([^\]]+)\]/g,'[^$1]').replace(/\[([^\]]+)\]/g,'[$1]').replace(/[.+^${}()|\\]/g,'\\$&').replace(/\*/g,'.*').replace(/\?/g,'.')+'$');
         const next=[];
         for(const dirPath of current){
           try{
@@ -1677,7 +1711,9 @@ class BashExecutor{
     while((m=re.exec(cmd))!==null){
       let tok=m[1]||m[2]||m[3];
       // 遇到 shell 管道/重定向符即截断：本沙箱不支持管道，后续命令对当前命令无意义
-      if(tok==='|'||tok==='||'||tok==='&&'||tok==='>'||tok==='>>'||tok==='<'||/^[12]?>?$/.test(tok)||/^[12]>&\d+$/.test(tok))break;
+      if(tok==='|'||tok==='||'||tok==='&&'||tok==='>'||tok==='>>'||tok==='<'||/^[12]>(?:&\d+)?$/.test(tok))break;
+      // 过滤被误拆的残片：2>&1 中 >&1 会被单独拆出
+      if(/^[12]?>$|^&\d+$/.test(tok))continue;
       // 过滤掉被误拆的重定向残片，如 2>&1、1>、2>、&1
       if(/^[12]?>$/.test(tok)||/^[12]>&\d+$/.test(tok)||/^&\d+$/.test(tok))continue;
       args.push(tok);
@@ -1845,12 +1881,15 @@ class BashExecutor{
   }
   async _echo(p,raw){
     let noNewline=false;
+    let parseEsc=false;
     let args=[...p];
     if(args[0]==='-n'){noNewline=true;args=args.slice(1);}
+    else if(args[0]==='-e'){parseEsc=true;args=args.slice(1);}
+    else if(args[0]==='-E'){args=args.slice(1);}
     const content=args.join(' ');
-    // 考虑引号内容去引号
     let text=content;
     if((text.startsWith('"')&&text.endsWith('"'))||(text.startsWith("'")&&text.endsWith("'")))text=text.slice(1,-1);
+    if(parseEsc)text=text.replace(/\\n/g,'\n').replace(/\\t/g,'\t').replace(/\\\\/g,'\\').replace(/\\r/g,'\r').replace(/\\0/g,'\0');
     // 检查重定向
     const m=raw.match(/echo\s+.*?(>>?)\s+(.+)/);
     if(m){
@@ -1939,10 +1978,12 @@ class BashExecutor{
   }
   async _cpRecursive(srcDir,dstDir){
     const dh=await this.vfs.getDirHandle(srcDir);
+    await this.vfs.ensureDir(dstDir);
     for await(const[name,handle]of dh.entries()){
       const srcPath=srcDir+'/'+name;
       const dstPath=dstDir+'/'+name;
       if(handle.kind==='directory'){
+        await this.vfs.ensureDir(dstPath);
         await this._cpRecursive(srcPath,dstPath);
       }else{
         const content=await this.vfs.readFile(srcPath);
@@ -2004,19 +2045,22 @@ class BashExecutor{
     const showLines=p.includes('-l')||p.length===files.length;
     const showWords=p.includes('-w');
     const showChars=p.includes('-c');
-    const showCharCount=p.includes('-m'); // -m: 字符数
-    const showAll=!showLines&&!showWords&&!showChars&&!showCharCount;
+    const showCharCount=p.includes('-m');
+    const showLongest=p.includes('-L');
+    const showAll=!showLines&&!showWords&&!showChars&&!showCharCount&&!showLongest;
     const results=[];
     for(const f of files){
       const content=await this.vfs.readFile(this.vfs.resolvePath(f));
       const lines=(content.match(/\n/g)||[]).length+(content.length>0&&!content.endsWith('\n')?1:0);
       const words=content.length===0?0:content.split(/\s+/).filter(Boolean).length;
-      const chars=content.length; // JS string length (UTF-16)
+      const chars=content.length;
+      const longest=content.split('\n').reduce((m,l)=>Math.max(m,l.length),0);
       const parts=[];
       if(showAll||showLines)parts.push(lines);
       if(showAll||showWords)parts.push(words);
       if(showAll||showChars)parts.push(chars);
       if(showCharCount)parts.push(chars);
+      if(showLongest)parts.push(longest);
       parts.push(f);
       results.push(parts.join('\t'));
     }
@@ -2188,7 +2232,8 @@ class BashExecutor{
       }
     };
     lines.push(target.endsWith('/')?target.slice(0,-1):target);
-    const dh=await this.vfs.getDirHandle(abs);
+    let dh;
+    try{dh=await this.vfs.getDirHandle(abs);}catch(e){throw new Error('tree: '+target+': No such file or directory');}
     await scan(dh,'',true);
     return lines.join('\n');
   }
@@ -2238,7 +2283,7 @@ class BashExecutor{
       }
       execCmd=p.slice(execIdx+1,execEnd).filter(a=>a!==';'&&a!=='\\;');
     }
-    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1])&&(typeIdx<0||a!==p[typeIdx+1])&&(execIdx<0||!execCmd||p.indexOf(a)>=execEnd))||'.';
+    const startDir=p.find(a=>!a.startsWith('-')&&(nameIdx<0||a!==p[nameIdx+1])&&(typeIdx<0||a!==p[typeIdx+1])&&(execIdx<0||!execCmd||p.indexOf(a)<execIdx))||'.';
     const abs=this.vfs.resolvePath(startDir);
     const regex=new RegExp('^'+pattern.replace(/\*/g,'\x00').replace(/\?/g,'\x01').replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\x00/g,'.*').replace(/\x01/g,'.')+'$');
     const results=[];
@@ -2413,14 +2458,27 @@ class BashExecutor{
   }
   async _sed(p,raw,inPlace){
     const inPlaceFlag=inPlace===true;
-    // 支持 s/// 替换和 /pattern/d 删除
+    // 支持 -n（仅打印匹配行）
+    const suppressDefault=p.includes('-n');
+    // /pattern/p 打印匹配行
+    const printMatch=raw.match(/sed\s+(-n\s+)?['"]?\/([^/]+)\/p['"]?\s*(.*)/);
+    if(printMatch){
+      const[, ,pattern,file]=printMatch;
+      if(!file)throw new Error('sed: 缺少文件参数');
+      const abs=this.vfs.resolvePath(file.trim().split(/\s+/)[0]);
+      const content=await this.vfs.readFile(abs);
+      const re=new RegExp(pattern,'');
+      const matched=content.split('\n').filter(l=>re.test(l)).join('\n');
+      return matched||'(无匹配)';
+    }
+    // /pattern/d 删除匹配行
     const delMatch=raw.match(/sed\s+(-i\s+)?['"]?\/([^/]+)\/d['"]?\s*(.*)/);
     if(delMatch){
       const[, ,pattern,file]=delMatch;
       if(!file)throw new Error('sed: 缺少文件参数');
       const abs=this.vfs.resolvePath(file.trim().split(/\s+/)[0]);
       const content=await this.vfs.readFile(abs);
-      const re=new RegExp(pattern,'g');
+      const re=new RegExp(pattern,'');
       const result=content.split('\n').filter(l=>!re.test(l)).join('\n');
       if(inPlaceFlag){await this.vfs.writeFile(abs,result);return'已就地修改: '+file.trim();}
       return result;
@@ -2531,13 +2589,15 @@ async _xargs(p,raw){
     const cmdMatch=raw.match(/xargs\s+(.*)/);
     if(!cmdMatch)throw new Error('xargs: 用法 xargs command');
     const baseCmdStr=cmdMatch[1].trim();
+    const allBase=p.filter(a=>!a.startsWith('-'));
+    // 直接用 allBase 数组，避免 join(' ') + parseCommand 破坏引号内空格
     const input=p._stdin||'';
-    const items=input.split('\n').filter(Boolean);
+    const nullSep=p.includes('-0');
+    const items=nullSep?input.split('\0').filter(Boolean):input.split('\n').filter(Boolean);
     const results=[];
-    // 支持 -I replstr 模式（如 xargs -I {} cp {} dest/）
     const iIdx=p.indexOf('-I');
     const replStr=iIdx>=0?p[iIdx+1]||'{}':'';
-    const baseArgs=replStr?this.parseCommand(baseCmdStr.replace(new RegExp(replStr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'),'__XARGS_PLACEHOLDER__')):this.parseCommand(baseCmdStr);
+    const baseArgs=replStr?allBase.map(a=>a.replace(new RegExp(replStr.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g'),'__XARGS_PLACEHOLDER__')):[...allBase];
     if(!baseArgs.length)return'';
     for(const item of items){
       const allArgs=replStr?baseArgs.map(a=>a.replace(/__XARGS_PLACEHOLDER__/g,item)):[...baseArgs,item];
@@ -2560,18 +2620,25 @@ async _xargs(p,raw){
   }
   async _split(p){
     const linesIdx=p.indexOf('-l');
+    const bytesIdx=p.indexOf('-b');
     const linesPerFile=linesIdx>=0?parseInt(p[linesIdx+1])||1000:1000;
+    const bytesPerFile=bytesIdx>=0?parseInt(p[bytesIdx+1])||1000:0;
     const numericSuffix=p.includes('-d');
     const aIdx=p.indexOf('-a');
     const suffixWidth=aIdx>=0?(parseInt(p[aIdx+1])||2):2;
-    const prefix=p.find(a=>!a.startsWith('-')&&a!=='-l'&&a!=='-d'&&a!=='-a'&&a!==String(linesPerFile)&&a!==String(suffixWidth))||'x';
-    const fileIdx=p.indexOf(prefix);
-    const file=fileIdx>=0?p[fileIdx]:null;
+    // 确定文件名：找到非 flag 参数（除了 -l N / -b N / -a N 的值）
+    const consumed=new Set([String(linesPerFile),String(bytesPerFile),String(suffixWidth)]);
+    const file=p.find(a=>!a.startsWith('-')&&!consumed.has(a));
     if(!file)throw new Error('split: 缺少文件参数');
+    const prefix=p.filter(a=>!a.startsWith('-')&&!consumed.has(a))[1]||'x';
     const content=await this.vfs.readFile(this.vfs.resolvePath(file));
-    const lines=content.split('\n');
     const chunks=[];
-    for(let i=0;i<lines.length;i+=linesPerFile)chunks.push(lines.slice(i,i+linesPerFile).join('\n'));
+    if(bytesPerFile>0){
+      for(let i=0;i<content.length;i+=bytesPerFile)chunks.push(content.slice(i,i+bytesPerFile));
+    }else{
+      const lines=content.split('\n');
+      for(let i=0;i<lines.length;i+=linesPerFile)chunks.push(lines.slice(i,i+linesPerFile).join('\n'));
+    }
     const results=[];
     for(let i=0;i<chunks.length;i++){
       let suffix;
