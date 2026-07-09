@@ -90,7 +90,14 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
 .send-btn{width:42px;height:42px;border-radius:8px;border:none;background:var(--green);color:#000;font-size:16px;font-weight:700;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:transform .15s,box-shadow .15s,background .3s;font-family:var(--mono);box-shadow:0 0 15px rgba(0,255,136,0.2)}
 .send-btn:disabled{opacity:.3;cursor:not-allowed;box-shadow:none}
 .send-btn:not(:disabled):hover{transform:translateY(-1px);box-shadow:0 0 25px rgba(0,255,136,0.3)}
-.send-btn:not(:disabled):active{transform:scale(.92)}
+.upload-btn{width:42px;height:42px;border-radius:8px;border:1px solid var(--separator-thick);background:rgba(0,255,136,0.04);color:var(--text-secondary);font-size:22px;font-weight:300;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;transition:all .15s;font-family:var(--mono);line-height:1}
+.upload-btn:hover{color:var(--green);border-color:rgba(0,255,136,0.35);background:rgba(0,255,136,0.08);box-shadow:0 0 8px rgba(0,255,136,0.08)}
+.upload-btn:active{transform:scale(.92)}
+.mm-purpose-card{padding:10px 12px;border-radius:8px;border:1px solid var(--separator);cursor:pointer;transition:all .2s;background:rgba(0,255,136,0.02);display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px}
+.mm-purpose-card:hover{border-color:rgba(0,255,136,0.25);background:rgba(0,255,136,0.05)}
+.mm-purpose-card.selected{border-color:rgba(0,255,136,0.5);background:rgba(0,255,136,0.08);box-shadow:0 0 12px rgba(0,255,136,0.08)}
+.upload-progress{height:3px;background:rgba(0,255,136,0.15);border-radius:2px;margin:4px 0;overflow:hidden}
+.upload-progress-bar{height:100%;background:linear-gradient(90deg,var(--green),var(--cyan));border-radius:2px;transition:width .2s}
 .send-btn.guest{width:auto;height:42px;border-radius:8px;padding:0 14px;font-size:12px;line-height:42px;white-space:nowrap;background:var(--text-tertiary);box-shadow:none}
 .send-btn.stop{background:var(--pink);box-shadow:0 0 15px rgba(255,51,102,0.2)}
 .send-btn.stop:hover{box-shadow:0 0 25px rgba(255,51,102,0.3)}
@@ -243,8 +250,64 @@ body,html{font-family:var(--font);background:var(--bg);color:var(--text);height:
 
   <div class="input-area">
     <div class="input-area-inner">
+      <button id="uploadBtn" class="upload-btn" aria-label="上传文件到MiniMax" title="上传文件到MiniMax平台">+</button>
       <textarea id="userInput" class="input-field" rows="1" placeholder="输入任务..." autofocus></textarea>
       <button id="sendBtn" class="send-btn" aria-label="发送">→</button>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="filePicker" style="display:none" multiple>
+
+<div class="fm-overlay hidden" id="mmUploadOverlay">
+  <div class="fm-panel" style="height:520px;display:flex;flex-direction:column">
+    <div class="fm-header" style="flex-shrink:0">
+      <div style="font-size:15px;font-weight:600;color:var(--green)"><i class="fas fa-cloud-upload-alt"></i> 素材上传</div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="fm-close" id="mmUploadAddBtn" style="font-size:13px;width:auto;padding:5px 14px;font-family:var(--mono);background:var(--green);color:#000;border:none;border-radius:6px;font-weight:600">上传文件</button>
+        <button class="fm-close" id="mmUploadCloseBtn" aria-label="关闭">✕</button>
+      </div>
+    </div>
+    <!-- 上半部分：分类卡片 + 提示 -->
+    <div style="padding:12px 16px 8px;flex-shrink:0">
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">选择用途后上传对应格式文件：</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px" id="mmPurposeGrid">
+        <div class="mm-purpose-card selected" data-purpose="voice_clone">
+          <div style="font-size:20px">🎵</div>
+          <div style="font-size:12px;font-weight:600">音频素材</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">text_to_speech · music_generation</div>
+          <div style="font-size:9px;color:var(--green);margin-top:2px">mp3 / m4a / wav</div>
+        </div>
+        <div class="mm-purpose-card" data-purpose="image">
+          <div style="font-size:20px">🖼</div>
+          <div style="font-size:12px;font-weight:600">图片素材</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">image_to_image · image_to_video · 首尾帧 · 主体参考</div>
+          <div style="font-size:9px;color:var(--green);margin-top:2px">jpg / png / webp</div>
+        </div>
+        <div class="mm-purpose-card" data-purpose="t2a_async_input">
+          <div style="font-size:20px">📝</div>
+          <div style="font-size:12px;font-weight:600">长文本合成</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">text_to_speech 异步</div>
+          <div style="font-size:9px;color:var(--green);margin-top:2px">txt / zip</div>
+        </div>
+        <div class="mm-purpose-card" data-purpose="video_understanding">
+          <div style="font-size:20px">🎬</div>
+          <div style="font-size:12px;font-weight:600">视频理解</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">text_to_video · image_to_video · 视频Agent</div>
+          <div style="font-size:9px;color:var(--green);margin-top:2px">mp4 / avi / mov / mkv</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:8px;line-height:1.6">
+        💡 图片生成 / 网页搜索无需素材 · 上传后返回 <span style="color:var(--green)">file_id</span> 供工具引用
+      </div>
+    </div>
+    <!-- 下半部分：文件列表 -->
+    <div class="fm-header" style="flex-shrink:0;border-top:1px solid var(--separator);margin-top:4px;padding:8px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-secondary)">已上传文件</div>
+      <div style="font-size:10px;color:var(--text-tertiary)" id="mmFileCount"></div>
+    </div>
+    <div class="fm-body" id="mmUploadBody" style="flex:1;min-height:0">
+      <div class="fm-empty" id="mmUploadLoading">📋 正在获取文件列表...</div>
     </div>
   </div>
 </div>
@@ -2915,13 +2978,40 @@ async image_generation(args,ctx){
     if(args.prompt_optimizer===true)imgBody.prompt_optimizer=true;
     if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>=512&&w<=2048&&h>=512&&h<=2048&&w%8===0&&h%8===0){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
     if(args.aigc_watermark===true)imgBody.aigc_watermark=true;
-    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,25000);
-    if(data.error)return '图片生成失败: '+data.message;
-    const br=data.base_resp||{};
+    // ── P0: 同步优先（proxy.php 直连 MiniMax API，预期 3-10s）──
+    let lastResp=null;
+    try{
+      lastResp=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,28000);
+    }catch(e_sync){
+      if(e_sync.name==='AbortError')throw e_sync;
+      // Timeout/网络错误 → 回退到异步（P1）
+    }
+    // ── P1: 异步回退（sync 超时/异常时，走 /image_submit + /image_poll）──
+    if(!lastResp||lastResp.error){
+      if(!lastResp)addStepMessage('⏱ 同步生成超时，切换到异步模式...');
+      const submitResp=await proxyRequest(MM_PROVIDER,'/image_submit',imgBody,15000);
+      if(submitResp.error)return '图片生成失败: '+submitResp.message;
+      const taskId=submitResp.task_id;
+      if(!taskId)return '图片生成失败：未获取到 task_id';
+      const start=Date.now();
+      const MAX_WAIT=60000;
+      let polledResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(2000);
+        if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/image_poll',{task_id:taskId},30000);
+        if(pollResp&&pollResp.status!=='pending'){polledResp=pollResp;break;}
+      }
+      if(!polledResp)return '图片生成超时（60s），请稍后重试';
+      lastResp=polledResp;
+    }
+    // ── 结果处理（P0/P1 共享）──
+    if(lastResp.error)return '图片生成失败: '+lastResp.message;
+    const br=lastResp.base_resp||{};
     if(br.status_code&&br.status_code!==0)return '图片生成失败: '+br.status_msg||'错误码 '+br.status_code;
-    const urls=data.data?.image_urls||[];
-    const failed=data.metadata?.failed_count||0;
-    const success=data.metadata?.success_count||urls.length;
+    const urls=lastResp.data?.image_urls||[];
+    const failed=lastResp.metadata?.failed_count||0;
+    const success=lastResp.metadata?.success_count||urls.length;
     if(!urls.length&&failed>0)return '图片生成失败 ('+failed+'张因内容安全被拦截)';
     if(!urls.length)return '未生成图像';
     if(failed>0)addStepMessage('⚠️ 成功 '+success+' 张 / 失败 '+failed+' 张（内容安全拦截）');
@@ -2959,12 +3049,38 @@ async image_generation(args,ctx){
     if(args.prompt_optimizer===true)imgBody.prompt_optimizer=true;
     if(args.width&&args.height){const w=Math.floor(Number(args.width)),h=Math.floor(Number(args.height));if(w>=512&&w<=2048&&h>=512&&h<=2048&&w%8===0&&h%8===0){imgBody.width=w;imgBody.height=h;delete imgBody.aspect_ratio;}}
     if(args.aigc_watermark===true)imgBody.aigc_watermark=true;
-    const data=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,25000);
-    if(data.error)return '图生图失败: '+data.message;
-    const br=data.base_resp||{};
+    // ── P0: 同步优先（proxy.php 直连 MiniMax API）──
+    let lastResp=null;
+    try{
+      lastResp=await proxyRequest(MM_PROVIDER,'/image_generation',imgBody,28000);
+    }catch(e_sync){
+      if(e_sync.name==='AbortError')throw e_sync;
+    }
+    // ── P1: 异步回退（sync 超时/异常时）──
+    if(!lastResp||lastResp.error){
+      if(!lastResp)addStepMessage('⏱ 同步生成超时，切换到异步模式...');
+      const submitResp=await proxyRequest(MM_PROVIDER,'/image_submit',imgBody,15000);
+      if(submitResp.error)return '图生图失败: '+submitResp.message;
+      const taskId=submitResp.task_id;
+      if(!taskId)return '图生图失败：未获取到 task_id';
+      const start=Date.now();
+      const MAX_WAIT=60000;
+      let polledResp=null;
+      while(Date.now()-start<MAX_WAIT){
+        await interruptibleSleep(2000);
+        if(stopRequested)return '操作已取消';
+        const pollResp=await proxyRequest(MM_PROVIDER,'/image_poll',{task_id:taskId},30000);
+        if(pollResp&&pollResp.status!=='pending'){polledResp=pollResp;break;}
+      }
+      if(!polledResp)return '图生图超时（60s），请稍后重试';
+      lastResp=polledResp;
+    }
+    // ── 结果处理（P0/P1 共享）──
+    if(lastResp.error)return '图生图失败: '+lastResp.message;
+    const br=lastResp.base_resp||{};
     if(br.status_code&&br.status_code!==0)return '图生图失败: '+br.status_msg||'错误码 '+br.status_code;
-    const urls=data.data?.image_urls||[];
-    const failed=data.metadata?.failed_count||0;
+    const urls=lastResp.data?.image_urls||[];
+    const failed=lastResp.metadata?.failed_count||0;
     if(!urls.length&&failed>0)return '图生图失败 ('+failed+'张因内容安全被拦截)';
     if(!urls.length)return '图生图失败: 未生成图像';
     const saveResults=await Promise.allSettled(urls.map(url=>saveMediaToUser(url,'images')));
@@ -3280,14 +3396,38 @@ async image_generation(args,ctx){
     const body={template_id:args.template_id};
     if(args.prompt)body.text_inputs=[{value:args.prompt}];
     if(args.media_url)body.media_inputs=[{value:args.media_url}];
-    const data=await proxyRequest(MM_PROVIDER,'/video_template_generation',body,30000);
+    // 改用 /video_template_submit（支持 worker.sh 接管 + DB 持久化 + 统计）
+    const data=await proxyRequest(MM_PROVIDER,'/video_template_submit',body,30000);
     if(data.error)return '创建失败: '+data.message;
     const br=data.base_resp||{};
     if(br.status_code&&br.status_code!==0)return '创建失败: '+br.status_msg;
     const taskId=data.task_id||'';
     if(!taskId)return '创建失败: 未获取到 task_id';
-    addStepMessage('✅ 任务已创建');
-    return '视频Agent任务已创建，task_id: '+taskId+'。可调用 query_video_agent_task 查询状态，调用 download_video 下载结果。';
+    addStepMessage('✅ 任务已提交（task_id=' + taskId + '）');
+    // 主动轮询 MiniMax task 状态（worker.sh 兜底，这里给前端即时反馈）
+    addStepMessage('⏳ 正在等待视频生成（最长 3 分钟）...');
+    const MAX_WAIT = 180000; const start = Date.now(); let delay = 5000; let mmTaskId = ''; let lastResp = null;
+    // 先等 5 秒拿到 MiniMax task_id
+    await interruptibleSleep(5000);
+    while (Date.now() - start < MAX_WAIT) {
+      if (stopRequested) return '操作已取消';
+      const pollData = await proxyRequest(MM_PROVIDER, '/query/video_template_generation', { task_id: mmTaskId || undefined, _template_proxy_task_id: taskId }, 15000);
+      if (pollData && pollData.task_id && !mmTaskId) mmTaskId = pollData.task_id;
+      if (pollData && (pollData.status === 'Success' || pollData.status === 'Fail')) { lastResp = pollData; break; }
+      await interruptibleSleep(delay);
+      delay = Math.min(delay * 1.3, 15000);
+    }
+    if (!lastResp) {
+      // 超时但任务已提交，worker.sh 会接管
+      return '视频Agent任务已提交（task_id=' + taskId + '）。后台 worker 正在处理，可稍后用 query_video_agent_task 查询。';
+    }
+    if (lastResp.status === 'Success' && lastResp.video_url) {
+      return '✅ 视频生成完成！链接（9 小时有效）：' + lastResp.video_url;
+    }
+    if (lastResp.status === 'Fail') {
+      return '❌ 视频生成失败：' + (lastResp.base_resp?.status_msg || '未知错误');
+    }
+    return '视频Agent任务已提交（task_id=' + taskId + '）。后台 worker 正在处理。';
     }catch(e){if(e.name==='AbortError')throw e;return '创建出错: '+e.message;}
   },
   async query_video_agent_task(args,ctx){
@@ -3500,13 +3640,60 @@ async image_generation(args,ctx){
         const tones=args.pronunciation.split(';').map(t=>t.trim()).filter(Boolean);
         if(tones.length>0)body.pronunciation_dict={tone:tones};
       }
-      const data=await proxyRequest(MM_PROVIDER,'/t2a_v2',body,25000);
-      const baseResp=data.base_resp||{};
+      // ── P0: 同步优先（proxy.php 直连 MiniMax TTS API）──
+      // 先 /tts_record 记录任务（用于 stats）
+      let ttsRecordId=null;
+      let resultData=null;
+      try{
+        const recResp=await proxyRequest(MM_PROVIDER,'/tts_record',body,5000);
+        if(recResp&&recResp.task_id)ttsRecordId=recResp.task_id;
+      }catch(_e){/* 静默失败，不影响主流程 */}
+      // 同步调用 /t2a_v2（28s timeout，PHP-FPM 30s 限制内安全）
+      let syncSuccess=false;
+      try{
+        resultData=await proxyRequest(MM_PROVIDER,'/t2a_v2',body,28000);
+        syncSuccess=true;
+      }catch(e_tts_sync){
+        if(e_tts_sync.name==='AbortError')throw e_tts_sync;
+        // Timeout → 回退到异步（P1）
+      }
+      // ── P1: 异步回退（sync 超时时，走 /tts_submit + /tts_poll）──
+      if(!syncSuccess){
+        addStepMessage('⏱ 同步 TTS 超时，切换到异步模式...');
+        const submitResp=await proxyRequest(MM_PROVIDER,'/tts_submit',body,15000);
+        if(submitResp.error)return '语音生成失败: '+submitResp.message;
+        const taskId=submitResp.task_id;
+        if(!taskId)return '语音生成失败：未获取到 task_id';
+        const start=Date.now();
+        const MAX_WAIT=60000;
+        let polledResp=null;
+        while(Date.now()-start<MAX_WAIT){
+          await interruptibleSleep(2000);
+          if(stopRequested)return '操作已取消';
+          const pollResp=await proxyRequest(MM_PROVIDER,'/tts_poll',{task_id:taskId},30000);
+          if(pollResp&&pollResp.status!=='pending'){polledResp=pollResp;break;}
+        }
+        if(!polledResp)return '语音生成超时（60s），请稍后重试';
+        resultData=polledResp;
+        // 异步路径已完成 DB 记录（/tts_submit 内部调了 recordTaskStart）
+        ttsRecordId=null; // 避免重复 finish
+      }
+      // ── 记录完成结果（仅 sync 路径需要，async 已在服务端完成）──
+      if(ttsRecordId&&syncSuccess){
+        try{
+          await proxyRequest(MM_PROVIDER,'/tts_finish',{
+            task_id:ttsRecordId,
+            result:resultData,
+            text_chars:args.text.length
+          },5000);
+        }catch(_e){}
+      }
+      const baseResp=resultData.base_resp||{};
       if(baseResp.status_code&&baseResp.status_code!==0){
         const errMsg=baseResp.status_msg||'未知错误';
         return '语音生成失败: '+errMsg+'。可用音色: female-shaonv(少女), female-yu-xiangan(御姐), female-jianai(可爱), female-tianmei(甜美), male-qn-qingse(青年男声), male-shaoshuai(少帅), male-zhixing(磁性), female-zhixing(知性), male-jingpin(精品男声), female-jingpin(精品女声)';
       }
-      const url=(data.audio_url||data.data?.audio_url||data.data?.audio||'').trim();
+      const url=(resultData.audio_url||resultData.data?.audio_url||resultData.data?.audio||'').trim();
       if(url){
         const f=await saveMediaToUser(url,'voice');
         if(f){
@@ -4783,6 +4970,241 @@ settingsSave.addEventListener('click',async()=>{
 settingsOverlay.addEventListener('click',(e)=>{if(e.target===settingsOverlay)closeSettings();});
 updateSettingsCurrent(); // 页面加载时更新当前模型显示
 modalPassword.addEventListener('keypress',(e)=>{if(e.key==='Enter')handleAuth();});
+// === MiniMax 文件上传面板 ===
+const uploadBtn=document.getElementById('uploadBtn');
+const mmUploadOverlay=document.getElementById('mmUploadOverlay');
+const mmUploadBody=document.getElementById('mmUploadBody');
+const mmUploadCloseBtn=document.getElementById('mmUploadCloseBtn');
+const mmUploadAddBtn=document.getElementById('mmUploadAddBtn');
+const filePicker=document.getElementById('filePicker');
+function updateMMFileCount(n){const el=document.getElementById('mmFileCount');if(el)el.textContent=n>0?n+' 个文件':'';}
+async function listMMFiles(){
+  if(!mmUploadBody)return;
+  mmUploadBody.innerHTML='<div class="fm-empty">📋 正在获取文件列表...</div>';
+  const purposes=['voice_clone','prompt_audio','t2a_async_input'];
+  const allFiles=[];let hadError=false;let errorMsg='';
+  for(const p of purposes){
+    try{const data=await proxyRequest(MM_PROVIDER,'/files/list?purpose='+p,{},15000);
+      if(data.files&&(data.files.length>0)){
+        data.files.forEach(f=>allFiles.push({file_id:f.file_id,filename:f.filename,purpose:f.purpose,bytes:f.bytes,source:'minimax'}));
+      }
+    }catch(e){if(e.name==='AbortError')throw e;hadError=true;errorMsg=e.message||e+'';}
+  }
+  // 同时列出沙箱中的图片素材
+  try{
+    if(await _ensureFS()){
+      const sandboxHandle=await _fileSystem.getDirHandle('/sandbox');
+      const scanDir=async(dirHandle,prefix,depth=0)=>{
+        if(depth>5)return;
+        for await(const[name,handle]of dirHandle.entries()){
+          const path=prefix?prefix+'/'+name:name;
+          if(handle.kind==='directory'){if(depth<3)await scanDir(handle,path,depth+1);}
+          else{
+            try{const f=await handle.getFile();const ext=(name.split('.').pop()||'').toLowerCase();
+              if(['jpg','jpeg','png','webp'].includes(ext)){
+                allFiles.push({file_id:'sandbox:'+path,filename:path,bytes:f.size,purpose:'image',source:'sandbox'});
+              }
+            }catch(e){}
+          }
+        }
+      };
+      await scanDir(sandboxHandle,'');
+    }
+  }catch(e){}
+  if(hadError&&allFiles.length===0){
+    const errText=errorMsg.includes('token_invalid')?'令牌已过期，请重新登录':errorMsg.includes('Network')?'网络连接失败':'服务器请求失败';
+    mmUploadBody.innerHTML='<div class="fm-empty"><i class="fas fa-exclamation-circle" style="color:var(--pink);font-size:24px"></i><div>获取文件列表失败</div><div style="font-size:11px;margin-top:4px">'+errText.slice(0,60)+'</div></div>';
+  }
+  else if(hadError)addStepMessage('⚠️ 部分文件列表获取失败');
+  if(!allFiles.length){mmUploadBody.innerHTML='<div class="fm-empty"><i class="fas fa-folder-open" style="font-size:24px;margin-bottom:6px"></i><div>暂无文件</div><div style="font-size:11px;margin-top:4px">点击「上传文件」选择本地文件</div></div>';updateMMFileCount(0);return;}
+  updateMMFileCount(allFiles.length);
+  allFiles.sort((a,b)=>(b.filename||'').localeCompare(a.filename||''));
+  const html=allFiles.map(f=>{
+    const size=f.bytes?Math.round(f.bytes/1024)+'KB':'?';
+    const isSandbox=f.source==='sandbox';
+    const isImage=f.purpose==='image'||/\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(f.filename||'');
+    const isAudio=/\.(mp3|m4a|wav|ogg)$/i.test(f.filename||'');
+    const isVideo=/\.(mp4|avi|mov|mkv|webm)$/i.test(f.filename||'');
+    const purposeIcon=isImage?'🖼':isAudio?'🎵':isVideo?'🎬':'📄';
+    const purposeLabel=isSandbox?'沙箱图片':(f.purpose||'');
+    // 预览URL
+    let previewUrl='';
+    if(isSandbox)previewUrl=PROXY_URL+'?_action=file_download&file_path='+encodeURIComponent(f.filename)+'&_token='+accessToken;
+    const previewBtn=isSandbox?('<button class="fm-item-action share" data-url="'+previewUrl+'" title="预览"><i class="fas fa-eye"></i></button>'):'';
+    const downloadBtn=isSandbox?('<a class="fm-item-action" href="'+previewUrl+'" download title="下载" style="text-decoration:none;display:flex;align-items:center;justify-content:center"><i class="fas fa-download"></i></a>'):('');
+    const copyBtn='<button class="fm-item-action share" data-url="'+(isSandbox?f.filename:f.file_id)+'" title="复制路径/ID"><i class="fas fa-copy"></i></button>';
+    const actions='<div class="fm-item-actions">'+previewBtn+downloadBtn+copyBtn+
+      (isSandbox?
+        '<button class="fm-item-action del" data-id="'+f.file_id+'" data-purpose="sandbox" title="删除"><i class="fas fa-trash"></i></button>':
+        '<button class="fm-item-action del" data-id="'+f.file_id+'" data-purpose="'+f.purpose+'" title="删除"><i class="fas fa-trash"></i></button>')+'</div>';
+    return'<div class="fm-item">'+
+      '<span class="fm-item-icon">'+purposeIcon+'</span>'+
+      '<div class="fm-item-name" style="cursor:pointer" data-preview="'+previewUrl+'" data-isPreview="'+(isSandbox?'1':'0')+'">'+f.filename+'</div>'+
+      '<div class="fm-item-size">'+size+'</div>'+
+      '<div class="fm-item-mtime">'+purposeLabel+'</div>'+actions+'</div>';
+  }).join('');
+  mmUploadBody.innerHTML=html;
+  // 文件名点击预览
+  mmUploadBody.querySelectorAll('.fm-item-name[data-isPreview="1"]').forEach(el=>{
+    el.addEventListener('click',()=>{const u=el.dataset.preview;if(u)window.open(u,'_blank');});
+  });
+  // 复制按钮
+  mmUploadBody.querySelectorAll('.share').forEach(btn=>{
+    btn.addEventListener('click',async()=>{
+      const val=btn.dataset.url||btn.dataset.id||'';
+      try{await navigator.clipboard.writeText(val);addStepMessage('📋 已复制: '+val.slice(0,60));}catch(e){addStepMessage('❌ 复制失败');}
+    });
+  });
+  // 预览按钮
+  mmUploadBody.querySelectorAll('.fa-eye').forEach(btn=>{
+    const parent=btn.closest('[data-url]');
+    if(parent)parent.addEventListener('click',()=>{const u=parent.dataset.url;if(u)window.open(u,'_blank');});
+  });
+  // 删除按钮
+  mmUploadBody.querySelectorAll('.del').forEach(btn=>{
+    btn.addEventListener('click',async()=>{
+      const fid=btn.dataset.id;const purpose=btn.dataset.purpose;
+      if(!fid){addStepMessage('❌ 无效的文件ID: '+fid);return;}
+      // 沙箱文件：直接从 OPFS 删除
+      if(purpose==='sandbox'){
+        try{
+          if(!await _ensureFS()){addStepMessage('❌ 文件系统不可用');return;}
+          addStepMessage('🗑️ 删除沙箱文件 '+fid);
+          await _fileSystem.deleteEntry(_fileSystem.resolvePath(fid.replace('sandbox:','')),{recursive:true});
+          addStepMessage('✅ 已删除');listMMFiles();
+        }catch(e){addStepMessage('❌ 删除失败: '+e.message);listMMFiles().catch(()=>{});}
+        return;
+      }
+      if(!Number.isFinite(Number(fid))){addStepMessage('❌ 无效的文件ID: '+fid);return;}
+      try{addStepMessage('🗑️ 删除文件 '+fid);const data=await proxyRequest(MM_PROVIDER,'/files/delete',{file_id:Number(fid),purpose},15000);
+        if(data.error){const err=data.message||data.error;addStepMessage('❌ 删除失败: '+err);return;}
+        addStepMessage('✅ 已删除');listMMFiles();
+      }catch(e){if(e.name==='AbortError')throw e;const err=e.message||e+'';
+        if(err.includes('token_invalid'))addStepMessage('❌ 令牌已过期，请刷新页面');
+        else if(err.includes('1004'))addStepMessage('❌ 密钥无权限');
+        else addStepMessage('❌ 删除失败: '+err.slice(0,100));
+        listMMFiles().catch(()=>{});
+      }
+    });
+  });
+}
+async function uploadToMM(file){
+  // 文件大小检查
+  const maxSize=file.size/1024/1024;
+  if(maxSize>20){addStepMessage('❌ 文件 '+file.name+' 超过20MB限制 ('+maxSize.toFixed(1)+'MB)');addAgentMessage('❌ '+file.name+' 超过MiniMax 20MB限制');return;}
+  if(!file.name){addStepMessage('❌ 文件无名称');return;}
+  const purposeRadio=document.querySelector('.mm-purpose-card.selected');
+  const purpose=purposeRadio?purposeRadio.dataset.purpose:'voice_clone';
+  // 根据用途校验文件扩展名
+  const ext=(file.name.split('.').pop()||'').toLowerCase();
+  const purposeExts={
+    voice_clone:['mp3','m4a','wav'],
+    image:['jpg','jpeg','png','webp'],
+    t2a_async_input:['txt','text','zip'],
+    video_understanding:['mp4','avi','mov','mkv']
+  };
+  const allowed=purposeExts[purpose]||[];
+  if(allowed.length>0&&!allowed.includes(ext)){
+    addStepMessage('❌ '+file.name+' 的扩展名 .'+ext+' 不匹配用途 '+purpose+'（允许: '+allowed.join(', ')+'）');
+    addAgentMessage('❌ '+file.name+' 格式不匹配 '+purpose+'，请选择正确用途');
+    return;
+  }
+  addStepMessage('📤 '+((purpose==='image')?'保存到沙箱':'上传到MiniMax')+': '+file.name+' ('+maxSize.toFixed(1)+'MB) ['+purpose+']');
+  uploadBtn.disabled=true;uploadBtn.textContent='⏳';
+  try{
+    if(purpose==='image'){
+      if(!await _ensureFS())throw new Error('文件系统不可用');
+      const buf=await file.arrayBuffer();
+      const path='images/'+file.name;
+      await _fileSystem.writeFile(_fileSystem.resolvePath(path),new Uint8Array(buf),false,true);
+      addStepMessage('✅ 图片已保存: '+path);
+      addAgentMessage('📁 图片已保存到: '+path+' （可在工具中使用此路径）');
+      listMMFiles();
+    }else{
+      // MiniMax 上传：使用 XHR 显示进度
+      const formData=new FormData();
+      formData.append('_token',accessToken);
+      formData.append('_provider',MM_PROVIDER);
+      formData.append('_path','/files/upload');
+      formData.append('purpose',purpose);
+      formData.append('file',file,file.name);
+      const result=await new Promise((resolve,reject)=>{
+        const xhr=new XMLHttpRequest();
+        xhr.open('POST',PROXY_URL);
+        xhr.setRequestHeader('X-Requested-With','XMLHttpRequest');
+        xhr.setRequestHeader('X-CSRF-Token',csrfToken);
+        xhr.timeout=60000;
+        xhr.upload.onprogress=e=>{
+          if(e.lengthComputable){
+            const pct=Math.round(e.loaded/e.total*100);
+            addStepMessage('📤 '+((purpose==='image')?'保存':'上传')+'中... '+pct+'%');
+          }
+        };
+        xhr.onload=()=>{
+          const t=xhr.responseText;
+          try{const d=JSON.parse(t);resolve({ok:xhr.status>=200&&xhr.status<300,status:xhr.status,data:d,text:t});}
+          catch(e){resolve({ok:false,status:xhr.status,data:null,text:t});}
+        };
+        xhr.onerror=()=>reject(new Error('网络错误'));
+        xhr.ontimeout=()=>reject(new DOMException('上传超时(60s)','TimeoutError'));
+        xhr.send(formData);
+      });
+      if(!result.ok){const t=result.text||'';throw new Error('HTTP '+result.status+': '+t.slice(0,100));}
+      const data=result.data;
+      if(data.error)throw new Error(data.message||data.error);
+      const br=data.base_resp||{};
+      if(br.status_code&&br.status_code!==0)throw new Error(br.status_msg||'错误码 '+br.status_code);
+      addStepMessage('✅ 上传成功 file_id: '+data.file.file_id+' 📁 '+data.file.filename);
+      addAgentMessage('✅ 已上传 '+file.name+' 到 MiniMax (file_id: '+data.file.file_id+')');
+      listMMFiles();
+    }
+  }catch(e){
+    if(e.name==='AbortError')throw e;
+    let errMsg=e.message||e+'';
+    // 解析 MiniMax 错误码，给出中文提示
+    try{
+      const parsed=JSON.parse(errMsg);
+      if(parsed.minimax_status_code===1004||parsed.status_code===1004)errMsg='密钥无权限访问此端点，请检查 MiniMax 账户权限';
+      else if(parsed.minimax_status_code===1008||parsed.status_code===1008)errMsg='MiniMax 余额不足，请充值';
+      else if(parsed.minimax_status_code===1026||parsed.status_code===1026)errMsg='文件内容涉及敏感信息，请更换文件';
+      else if(parsed.error==='token_invalid')errMsg='登录令牌已失效，请重新登录或刷新页面';
+      else if(parsed.minimax_status_code)errMsg='MiniMax 错误码 '+parsed.minimax_status_code+': '+(parsed.message||'未知错误');
+      else if(parsed.error)errMsg=parsed.message||parsed.error;
+    }catch(ex){}
+    // HTTP 状态码翻译
+    if(errMsg.startsWith('HTTP 403'))errMsg='令牌无效或已过期（服务器拒绝访问）';
+    else if(errMsg.startsWith('HTTP 503'))errMsg='服务器暂时不可用（所有 API 密钥已耗尽）';
+    else if(errMsg.startsWith('HTTP 500'))errMsg='服务器内部错误，请稍后重试';
+    addStepMessage('❌ 上传失败: '+errMsg);
+    addAgentMessage('❌ 上传 '+file.name+' 失败: '+errMsg);
+  }finally{
+    uploadBtn.disabled=false;uploadBtn.textContent='+';
+  }
+}
+uploadBtn.addEventListener('click',()=>{
+  if(!accessToken){addAgentMessage('⚠️ 请先登录或获取访客令牌后再上传文件');return;}
+  mmUploadOverlay.classList.remove('hidden');listMMFiles();
+});
+mmUploadCloseBtn.addEventListener('click',()=>mmUploadOverlay.classList.add('hidden'));
+mmUploadOverlay.addEventListener('click',(e)=>{if(e.target===mmUploadOverlay)mmUploadOverlay.classList.add('hidden');});
+mmUploadAddBtn.addEventListener('click',()=>filePicker.click());
+filePicker.addEventListener('change',()=>{
+  const files=filePicker.files;
+  if(!files||!files.length)return;
+  for(const f of files)uploadToMM(f);
+  filePicker.value='';
+});
+// 用途卡片点击切换
+document.querySelectorAll('.mm-purpose-card').forEach(card=>{
+  card.addEventListener('click',()=>{
+    document.querySelectorAll('.mm-purpose-card').forEach(c=>c.classList.remove('selected'));
+    card.classList.add('selected');
+    const accepts={voice_clone:'.mp3,.m4a,.wav',image:'.jpg,.jpeg,.png,.webp',t2a_async_input:'.txt,.text,.zip',video_understanding:'.mp4,.avi,.mov,.mkv'};
+    filePicker.accept=accepts[card.dataset.purpose]||'';
+  });
+});
+// 初始默认值
+filePicker.accept='.mp3,.m4a,.wav';
 sendBtn.addEventListener('click',()=>{
   const text=userInput.value.trim();
   if(!text)return;

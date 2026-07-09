@@ -48,6 +48,8 @@ function getMemoryDB(): PDO {
                 PDO::ATTR_TIMEOUT => 5,
             ]
         );
+        // 首次连接时确保 music_tasks / video_tasks 表存在
+        initTaskStatsSchema($pdo);
     }
     return $pdo;
 }
@@ -164,6 +166,168 @@ function getAuthenticatedUserId(): ?string {
         @session_start();
     }
     return $_SESSION['user'] ?? null;
+}
+
+// ═══════════════════════════════════════
+// TASK STATS SCHEMA（音乐/视频任务历史持久化）
+// ═══════════════════════════════════════
+// worker.sh 通过 cron 触发时 stdout 被丢弃，P1 已修复日志
+// 但要做月度统计需要 DB 持久化 — 此模块为音乐/视频任务建独立表
+function initTaskStatsSchema(PDO $pdo): void {
+    static $initialized = false;
+    if ($initialized) return;
+    $initialized = true;
+
+    // music_tasks 表：每条音乐生成一条记录
+    $pdo->exec("CREATE TABLE IF NOT EXISTS music_tasks (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        task_id CHAR(16) NOT NULL,
+        user_id VARCHAR(64) NOT NULL DEFAULT 'guest',
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        params JSON DEFAULT NULL,
+        http_code SMALLINT DEFAULT NULL,
+        file_id VARCHAR(128) DEFAULT NULL,
+        duration_ms INT DEFAULT NULL,
+        error_message TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY uk_task_id (task_id),
+        KEY idx_user_created (user_id, created_at),
+        KEY idx_status_created (status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // video_tasks 表：每条视频生成一条记录（含 video_template 子类型）
+    $pdo->exec("CREATE TABLE IF NOT EXISTS video_tasks (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        task_id CHAR(16) NOT NULL,
+        user_id VARCHAR(64) NOT NULL DEFAULT 'guest',
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        params JSON DEFAULT NULL,
+        http_code SMALLINT DEFAULT NULL,
+        file_id VARCHAR(128) DEFAULT NULL,
+        duration_ms INT DEFAULT NULL,
+        error_message TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY uk_task_id (task_id),
+        KEY idx_user_created (user_id, created_at),
+        KEY idx_status_created (status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // image_tasks 表：每条图片生成一条记录（image_generation/image_to_image）
+    $pdo->exec("CREATE TABLE IF NOT EXISTS image_tasks (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        task_id CHAR(16) NOT NULL,
+        user_id VARCHAR(64) NOT NULL DEFAULT 'guest',
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        params JSON DEFAULT NULL,
+        http_code SMALLINT DEFAULT NULL,
+        file_id VARCHAR(128) DEFAULT NULL,
+        duration_ms INT DEFAULT NULL,
+        error_message TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY uk_task_id (task_id),
+        KEY idx_user_created (user_id, created_at),
+        KEY idx_status_created (status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // tts_tasks 表：每条 TTS 语音合成一条记录（text_to_speech）
+    $pdo->exec("CREATE TABLE IF NOT EXISTS tts_tasks (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        task_id CHAR(16) NOT NULL,
+        user_id VARCHAR(64) NOT NULL DEFAULT 'guest',
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        params JSON DEFAULT NULL,
+        http_code SMALLINT DEFAULT NULL,
+        file_id VARCHAR(128) DEFAULT NULL,
+        text_chars INT DEFAULT NULL,
+        duration_ms INT DEFAULT NULL,
+        error_message TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP NULL DEFAULT NULL,
+        UNIQUE KEY uk_task_id (task_id),
+        KEY idx_user_created (user_id, created_at),
+        KEY idx_status_created (status, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    // 兼容旧表：如果表已存在但缺 params 列，动态补齐（MySQL 5.7 无 IF NOT EXISTS 语法）
+    foreach (['music_tasks', 'video_tasks', 'image_tasks', 'tts_tasks'] as $tbl) {
+        try {
+            $colCheck = $pdo->query("SHOW COLUMNS FROM {$tbl} LIKE 'params'")->fetchAll();
+            if (empty($colCheck)) {
+                $pdo->exec("ALTER TABLE {$tbl} ADD COLUMN params JSON DEFAULT NULL AFTER status");
+                error_log("[initTaskStatsSchema] Added params column to {$tbl}");
+            }
+        } catch (Throwable $e) {
+            error_log("[initTaskStatsSchema] ALTER {$tbl} params failed: " . $e->getMessage());
+        }
+    }
+}
+
+// 记录任务开始（INSERT pending）
+function recordTaskStart(PDO $pdo, string $type, string $taskId, string $userId, array $params): void {
+    try {
+        $tableMap = [
+            'video' => 'video_tasks',
+            'music' => 'music_tasks',
+            'image' => 'image_tasks',
+            'tts'   => 'tts_tasks',
+        ];
+        $table = $tableMap[$type] ?? 'music_tasks'; // 未知 type 回退到 music_tasks
+        $paramsJson = json_encode($params, JSON_UNESCAPED_UNICODE);
+        if ($paramsJson === false) {
+            throw new RuntimeException('json_encode failed: ' . json_last_error_msg());
+        }
+        $stmt = $pdo->prepare("INSERT INTO {$table} (task_id, user_id, status, params) VALUES (?, ?, 'pending', ?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), params=VALUES(params)");
+        $stmt->execute([$taskId, $userId, $paramsJson]);
+        error_log("[recordTaskStart] OK type={$type} table={$table} task_id={$taskId} user={$userId} rows={$stmt->rowCount()}");
+    } catch (Throwable $e) {
+        error_log("[recordTaskStart FAIL] type={$type} task_id={$taskId} error=" . $e->getMessage() . " params_type=" . gettype($params));
+        throw $e; // 重新抛出，让调用方决定是否吞
+    }
+}
+
+// 记录任务结束（UPDATE status + completed_at + result 摘要）
+function recordTaskFinish(PDO $pdo, string $type, string $taskId, array $result, ?int $httpCode = null, ?int $durationMs = null): void {
+    try {
+        $tableMap = [
+            'video' => 'video_tasks',
+            'music' => 'music_tasks',
+            'image' => 'image_tasks',
+            'tts'   => 'tts_tasks',
+        ];
+        $table = $tableMap[$type] ?? 'music_tasks';
+        // ── 状态判定：兼容 3 种错误格式 ──
+        //   1) 顶层 'error' 字段（proxy 内部错误 / worker 回写错误）
+        //   2) MiniMax base_resp.status_code 非 0（MiniMax API 业务错误）
+        //   3) HTTP 状态码 4xx/5xx（curl 层错误）
+        $hasTopError = isset($result['error']);
+        $baseRespCode = $result['base_resp']['status_code'] ?? null;
+        $hasApiError  = is_int($baseRespCode) && $baseRespCode !== 0;
+        $hasHttpError = is_int($httpCode) && $httpCode >= 400;
+        $isFailed = $hasTopError || $hasApiError || $hasHttpError;
+        $status = $isFailed ? 'failed' : 'completed';
+        // 错误信息归一化
+        $fileId = $result['file_id'] ?? $result['fileID'] ?? null;
+        $errMsg = $result['error']
+            ?? ($result['message'] ?? null)
+            ?? ($result['base_resp']['status_msg'] ?? null)
+            ?? ($isFailed ? "HTTP {$httpCode}" : null);
+        $stmt = $pdo->prepare("UPDATE {$table} SET status=?, http_code=?, file_id=?, error_message=?, completed_at=NOW(), duration_ms=COALESCE(?, duration_ms) WHERE task_id=?");
+        $stmt->execute([
+            $status,
+            $httpCode,
+            $fileId,
+            $errMsg ? mb_substr((string)$errMsg, 0, 500) : null,
+            $durationMs,
+            $taskId,
+        ]);
+        error_log("[recordTaskFinish] type={$type} task_id={$taskId} status={$status} http={$httpCode} base_resp_code=" . var_export($baseRespCode, true));
+    } catch (Throwable $e) {
+        error_log("[recordTaskFinish FAIL] type={$type} task_id={$taskId} error=" . $e->getMessage());
+        throw $e;
+    }
 }
 
 // ── 记忆配额检查（100MB/用户） ──
@@ -1167,8 +1331,9 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 // ④ 前端访问令牌验证（API 代理需要）
 // ═══════════════════════════════════════
 
-$token = $input['_token'] ?? $_GET['_token'] ?? '';
+$token = $input['_token'] ?? $_GET['_token'] ?? $_POST['_token'] ?? '';
 unset($input['_token']);
+unset($_POST['_token']);
 
 if ($token !== ACCESS_TOKEN) {
     http_response_code(403);
@@ -1201,7 +1366,9 @@ function getEndpointTimeout(string $apiPath): int {
         '/files/retrieve_content' => 25,
         '/video_template_generation' => 25,
         '/query/video_template_generation' => 15,
-        '/t2a_v2' => 60,
+        '/t2a_v2' => 28,
+        '/tts_submit' => 5,
+        '/tts_poll' => 5,
         '/chat/completions' => 25,
     ];
     return $timeouts[$apiPath] ?? 25;
@@ -1397,6 +1564,12 @@ if ($api_path === '/image_submit') {
         'input' => $input,
     ];
     file_put_contents("$IMAGE_TASK_DIR/$taskId.params", serialize($taskData));
+
+    // P2: DB 持久化（image_tasks 表）
+    try {
+        recordTaskStart(getMemoryDB(), 'image', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+    } catch (Throwable $e) { /* 静默失败 */ }
+
     header('Content-Type: application/json');
     echo json_encode([
         'task_id' => $taskId,
@@ -1415,29 +1588,41 @@ if ($api_path === '/image_poll') {
     $resultFile = "$IMAGE_TASK_DIR/$taskId.result";
     $paramFile = "$IMAGE_TASK_DIR/$taskId.params";
     header('Content-Type: application/json');
-    
+
     // 如果结果已存在，直接返回
     if (file_exists($resultFile)) {
         $content = file_get_contents($resultFile);
+        $resultData = json_decode($content, true) ?: [];
+        // P2: DB UPDATE
+        try {
+            $httpCode = $resultData['_http_code'] ?? null;
+            recordTaskFinish(getMemoryDB(), 'image', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+        } catch (Throwable $e) {}
         @unlink($resultFile);
         @unlink($paramFile);
         echo $content;
         exit;
     }
-    
+
     // 惰性处理：如果任务还在 pending，尝试处理它
     if (file_exists($paramFile)) {
         // 调用处理逻辑（内部函数，不通过 HTTP）
         $processResult = processImageTaskInternal($taskId, $paramFile, $IMAGE_TASK_DIR, $PROVIDERS);
         if ($processResult && file_exists($resultFile)) {
             $content = file_get_contents($resultFile);
+            $resultData = json_decode($content, true) ?: [];
+            // P2: DB UPDATE
+            try {
+                $httpCode = $resultData['_http_code'] ?? null;
+                recordTaskFinish(getMemoryDB(), 'image', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+            } catch (Throwable $e) {}
             @unlink($resultFile);
             @unlink($paramFile);
             echo $content;
             exit;
         }
     }
-    
+
     echo json_encode(['status' => 'pending']);
     exit;
 }
@@ -1574,6 +1759,11 @@ if ($api_path === '/music_generation') {
     ];
     file_put_contents("$taskDir/$taskId.params", serialize($taskData));
 
+    // ── P2: DB 持久化（worker.sh 路径也能查到）──
+    try {
+        recordTaskStart(getMemoryDB(), 'music', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+    } catch (Throwable $e) { /* 静默失败，不影响主流程 */ }
+
     header('Content-Type: application/json');
     echo json_encode([
         'task_id' => $taskId,
@@ -1626,11 +1816,16 @@ if ($api_path === '/music_generation') {
             $output['_http_code'] = $result['http_code'];
             file_put_contents("$taskDir/$taskId.result", json_encode($output));
             @unlink("$taskDir/$taskId.params");
+            // P2: DB 持久化（音乐生成完成）
+            try { recordTaskFinish(getMemoryDB(), 'music', $taskId, $output, $result['http_code']); } catch (Throwable $e) {}
         } else {
-            file_put_contents("$taskDir/$taskId.result", json_encode([
+            $errOutput = [
                 'error' => 'proxy_all_keys_exhausted',
                 'message' => '所有 API Key 均已耗尽: ' . $last_error,
-            ]));
+            ];
+            file_put_contents("$taskDir/$taskId.result", json_encode($errOutput));
+            // P2: DB 持久化（音乐失败）
+            try { recordTaskFinish(getMemoryDB(), 'music', $taskId, $errOutput, null); } catch (Throwable $e) {}
         }
     };
 
@@ -1856,12 +2051,17 @@ if ($api_path === '/music_process') {
         $output['_http_code'] = $result['http_code'];
         file_put_contents("$taskDir/$taskId.result", json_encode($output));
         @unlink($paramFile);
+        // P2: DB 持久化（worker 路径 → music_process 完成）
+        try { recordTaskFinish(getMemoryDB(), 'music', $taskId, $output, $result['http_code']); } catch (Throwable $e) {}
         echo json_encode(['status' => 'completed']);
     } else {
-        file_put_contents("$taskDir/$taskId.result", json_encode([
+        $errOutput = [
             'error' => 'proxy_all_keys_exhausted',
             'message' => '所有 API Key 均已耗尽: ' . $last_error,
-        ]));
+        ];
+        file_put_contents("$taskDir/$taskId.result", json_encode($errOutput));
+        // P2: DB 持久化（worker 路径 → music_process 失败）
+        try { recordTaskFinish(getMemoryDB(), 'music', $taskId, $errOutput, null); } catch (Throwable $e) {}
         echo json_encode(['status' => 'failed', 'error' => $last_error]);
     }
     exit;
@@ -1906,6 +2106,11 @@ if ($api_path === '/music_write_result') {
     $taskDir = '/vhost/tmp/music_tasks';
     file_put_contents("$taskDir/$taskId.result", json_encode($resultData));
     @unlink("$taskDir/$taskId.params");
+    // P2: DB 持久化（worker.sh 通过 music_write_result 回写）
+    try {
+        $httpCode = $resultData['_http_code'] ?? null;
+        recordTaskFinish(getMemoryDB(), 'music', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+    } catch (Throwable $e) {}
     echo json_encode(['status' => 'saved']);
     exit;
 }
@@ -1934,6 +2139,380 @@ if ($api_path === '/music_get_provider') {
 }
 
 // ═══════════════════════════════════════
+// 音乐/视频任务统计查询（P3）
+// ═══════════════════════════════════════
+// 入参（GET 或 POST body）：
+//   type  = 'music' | 'video'（默认 music）
+//   group = 'month' | 'day' | 'status' | 'user'（默认 month）
+//   month = 'YYYY-MM'（限定月份，可选）
+//   user  = 'user_id'（限定用户，可选）
+// 输出：按 group 分组的 COUNT(*)，含 completed/failed/total
+function taskStatsQuery(PDO $pdo, string $type, array $input): array {
+    $table = $type === 'video' ? 'video_tasks' : 'music_tasks';
+    $group = $input['group'] ?? $_GET['group'] ?? 'month';
+    $month = $input['month'] ?? $_GET['month'] ?? null;
+    $user  = $input['user']  ?? $_GET['user']  ?? null;
+    $taskType = $input['task_type'] ?? $_GET['task_type'] ?? null; // 过滤子类型（normal/template）
+
+    $where = ['1=1'];
+    $bind  = [];
+    if ($month && preg_match('/^\d{4}-\d{2}$/', $month)) {
+        $where[] = 'DATE_FORMAT(created_at, ?) = ?';
+        $bind[]  = '%Y-%m';
+        $bind[]  = $month;
+    }
+    if ($user) {
+        $where[] = 'user_id = ?';
+        $bind[]  = $user;
+    }
+    // task_type 过滤：params JSON 字段里 JSON_EXTRACT(...,'$.task_type')
+    if ($taskType) {
+        $where[] = "JSON_UNQUOTE(JSON_EXTRACT(params, '$.task_type')) = ?";
+        $bind[]  = $taskType;
+    }
+    $whereSql = implode(' AND ', $where);
+
+    // 总数（不受 group 影响）
+    $totalStmt = $pdo->prepare("SELECT COUNT(*) AS total,
+        SUM(status='completed') AS completed,
+        SUM(status='failed')    AS failed,
+        SUM(status='pending')   AS pending
+        FROM {$table} WHERE {$whereSql}");
+    $totalStmt->execute($bind);
+    $totals = $totalStmt->fetch();
+
+    // 按 group 分组
+    $groupMap = [
+        'day'    => "DATE_FORMAT(created_at, '%Y-%m-%d')",
+        'status' => 'status',
+        'user'   => 'user_id',
+        'month'  => "DATE_FORMAT(created_at, '%Y-%m')",
+    ];
+    $groupBy = $groupMap[$group] ?? $groupMap['month'];
+
+    $grpStmt = $pdo->prepare("SELECT {$groupBy} AS bucket, COUNT(*) AS total,
+        SUM(status='completed') AS completed,
+        SUM(status='failed')    AS failed,
+        SUM(status='pending')   AS pending
+        FROM {$table} WHERE {$whereSql}
+        GROUP BY bucket ORDER BY bucket DESC LIMIT 100");
+    $grpStmt->execute($bind);
+    $buckets = $grpStmt->fetchAll();
+
+    return [
+        'type'    => $type,
+        'totals'  => [
+            'total'     => (int)($totals['total'] ?? 0),
+            'completed' => (int)($totals['completed'] ?? 0),
+            'failed'    => (int)($totals['failed'] ?? 0),
+            'pending'   => (int)($totals['pending'] ?? 0),
+        ],
+        'group'   => $group,
+        'buckets' => array_map(fn($r) => [
+            'bucket'    => $r['bucket'],
+            'total'     => (int)$r['total'],
+            'completed' => (int)$r['completed'],
+            'failed'    => (int)$r['failed'],
+            'pending'   => (int)$r['pending'],
+        ], $buckets),
+    ];
+}
+
+if ($api_path === '/music_stats' || $api_path === '/video_stats') {
+    header('Content-Type: application/json');
+    $type = ($api_path === '/video_stats') ? 'video' : 'music';
+    try {
+        $result = taskStatsQuery(getMemoryDB(), $type, $input);
+        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'stats_failed', 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// image_stats / tts_stats 端点（复用 taskStatsQuery）
+if ($api_path === '/image_stats' || $api_path === '/tts_stats') {
+    header('Content-Type: application/json');
+    $type = ($api_path === '/image_stats') ? 'image' : 'tts';
+    try {
+        $result = taskStatsQuery(getMemoryDB(), $type, $input);
+        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'stats_failed', 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ═══════════════════════════════════════
+// TTS 任务记录（text_to_speech → /tts_record + /t2a_v2）
+// ═══════════════════════════════════════
+// 设计：保持 UI 调 /t2a_v2 同步路径不变，仅在 UI 调用前后用 /tts_record 记录任务
+// 优势：TTS 是短任务（5-30s），同步调用更简单；DB 记录提供 stats + 失败归因
+
+// TTS 任务开始记录（UI 调用 /t2a_v2 前调用）
+if ($api_path === '/tts_record') {
+    header('Content-Type: application/json');
+    $taskId = bin2hex(random_bytes(8));
+    try {
+        recordTaskStart(getMemoryDB(), 'tts', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+        echo json_encode(['task_id' => $taskId, 'status' => 'recorded']);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'record_failed', 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// TTS 任务完成记录（UI 调用 /t2a_v2 后调用）
+if ($api_path === '/tts_finish') {
+    header('Content-Type: application/json');
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    $resultData = $input['result'] ?? [];
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    try {
+        $httpCode = $resultData['_http_code'] ?? null;
+        $textChars = isset($input['text_chars']) ? (int)$input['text_chars'] : null;
+        recordTaskFinish(getMemoryDB(), 'tts', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+        // 额外记录 text_chars
+        if ($textChars !== null) {
+            $pdo = getMemoryDB();
+            $pdo->prepare("UPDATE tts_tasks SET text_chars=? WHERE task_id=?")->execute([$textChars, $taskId]);
+        }
+        echo json_encode(['status' => 'recorded']);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'record_failed', 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ═══════════════════════════════════════
+// TTS 异步回退处理（sync 超时 → submit + poll）
+// ═══════════════════════════════════════
+
+// 惰性处理函数：由 /tts_poll 触发，后台执行 TTS API 调用
+function processTtsTaskInternal($taskId, $paramFile, $taskDir, $PROVIDERS) {
+    $lockFile = "$taskDir/$taskId.lock";
+    if (file_exists($lockFile)) return false;
+    file_put_contents($lockFile, time());
+    try {
+        $taskData = unserialize(file_get_contents($paramFile));
+        if (!$taskData || !is_array($taskData)) {
+            file_put_contents("$taskDir/$taskId.result", json_encode([
+                'error' => 'invalid_params', 'message' => '任务参数损坏',
+            ]));
+            @unlink($lockFile);
+            return true;
+        }
+        $taskProvider = $taskData['provider'] ?? 'minimax';
+        $originalInput = $taskData['input'] ?? [];
+        if (!isset($PROVIDERS[$taskProvider])) {
+            file_put_contents("$taskDir/$taskId.result", json_encode([
+                'error' => 'unknown_provider', 'message' => '供应商不存在: ' . $taskProvider,
+            ]));
+            @unlink($lockFile);
+            return true;
+        }
+        $taskProvConfig = $PROVIDERS[$taskProvider];
+        $taskKeys = $taskProvConfig['keys'];
+        $taskBaseUrl = rtrim($taskProvConfig['base_url'], '/');
+        $tts_url = $taskBaseUrl . '/t2a_v2';
+        $last_error = '';
+        $result = null;
+        foreach ($taskKeys as $idx => $key) {
+            if (empty($key)) continue;
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $tts_url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 60,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $key,
+                ],
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($originalInput),
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($error) { $last_error = $error; continue; }
+            if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+            $result = ['http_code' => $http_code, 'body' => $response];
+            break;
+        }
+        if ($result) {
+            $bodyData = json_decode($result['body'], true);
+            $output = $bodyData ?: ['raw' => $result['body']];
+            $output['_http_code'] = $result['http_code'];
+            file_put_contents("$taskDir/$taskId.result", json_encode($output));
+        } else {
+            file_put_contents("$taskDir/$taskId.result", json_encode([
+                'error' => 'proxy_all_keys_exhausted',
+                'message' => '所有 API Key 均已耗尽: ' . $last_error,
+            ]));
+        }
+        @unlink($lockFile);
+        return true;
+    } catch (Exception $e) {
+        @unlink($lockFile);
+        return false;
+    }
+}
+
+$TTS_TASK_DIR = '/vhost/tmp/tts_tasks';
+
+// TTS 任务提交（异步回退入口）
+if ($api_path === '/tts_submit') {
+    $taskId = bin2hex(random_bytes(8));
+    if (!is_dir($TTS_TASK_DIR)) {
+        @mkdir($TTS_TASK_DIR, 0755, true);
+    }
+    $taskData = [
+        'provider' => $provider_name,
+        'input' => $input,
+    ];
+    file_put_contents("$TTS_TASK_DIR/$taskId.params", serialize($taskData));
+
+    // DB 持久化
+    try {
+        recordTaskStart(getMemoryDB(), 'tts', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+    } catch (Throwable $e) {}
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'task_id' => $taskId,
+        'status' => 'processing',
+        'message' => '语音生成已提交',
+    ]);
+
+    // fastcgi_finish_request + 后台处理
+    $bgTtsProcess = function() use ($taskId, $TTS_TASK_DIR, $taskData, $PROVIDERS) {
+        $processResult = processTtsTaskInternal($taskId, "$TTS_TASK_DIR/$taskId.params", $TTS_TASK_DIR, $PROVIDERS);
+        if ($processResult) {
+            $resultFile = "$TTS_TASK_DIR/$taskId.result";
+            if (file_exists($resultFile)) {
+                $content = file_get_contents($resultFile);
+                $resultData = json_decode($content, true) ?: [];
+                try {
+                    $httpCode = $resultData['_http_code'] ?? null;
+                    recordTaskFinish(getMemoryDB(), 'tts', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+                } catch (Throwable $e) {}
+            }
+        }
+    };
+
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+        $bgTtsProcess();
+    }
+    exit;
+}
+
+// TTS 任务结果查询
+if ($api_path === '/tts_poll') {
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id', 'message' => '无效的 task_id']);
+        exit;
+    }
+    $resultFile = "$TTS_TASK_DIR/$taskId.result";
+    $paramFile = "$TTS_TASK_DIR/$taskId.params";
+
+    header('Content-Type: application/json');
+    if (file_exists($resultFile)) {
+        $content = file_get_contents($resultFile);
+        $resultData = json_decode($content, true) ?: [];
+        try {
+            $httpCode = $resultData['_http_code'] ?? null;
+            recordTaskFinish(getMemoryDB(), 'tts', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+        } catch (Throwable $e) {}
+        @unlink($resultFile);
+        @unlink($paramFile);
+        echo $content;
+        exit;
+    }
+
+    // 惰性处理：如果任务还在 pending，尝试处理它
+    if (file_exists($paramFile)) {
+        $processResult = processTtsTaskInternal($taskId, $paramFile, $TTS_TASK_DIR, $PROVIDERS);
+        if ($processResult && file_exists($resultFile)) {
+            $content = file_get_contents($resultFile);
+            $resultData = json_decode($content, true) ?: [];
+            try {
+                $httpCode = $resultData['_http_code'] ?? null;
+                recordTaskFinish(getMemoryDB(), 'tts', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+            } catch (Throwable $e) {}
+            @unlink($resultFile);
+            @unlink($paramFile);
+            echo $content;
+            exit;
+        }
+    }
+
+    echo json_encode(['status' => 'pending']);
+    exit;
+}
+
+// 调试端点：直接测 INSERT/UPDATE（admin 鉴权）
+if ($api_path === '/_debug_task_insert' && ($_GET['debug'] ?? '') === 'test123') {
+    header('Content-Type: application/json');
+    $op = $_GET['op'] ?? 'debug';
+    try {
+        $pdo = getMemoryDB();
+        if ($op === 'debug') {
+            $table = ($_GET['type'] ?? 'music') === 'video' ? 'video_tasks' : 'music_tasks';
+            $tid = $_GET['task_id'] ?? 'dbg1234567890ab';
+            $stmt = $pdo->prepare("INSERT INTO {$table} (task_id, user_id, status, http_code, file_id) VALUES (?, 'debug', 'completed', 200, 'debug_001') ON DUPLICATE KEY UPDATE status='completed', http_code=200");
+            $stmt->execute([$tid]);
+            $check = $pdo->query("SELECT task_id, status FROM {$table} WHERE task_id='{$tid}'")->fetchAll(PDO::FETCH_ASSOC);
+            $pdo->prepare("DELETE FROM {$table} WHERE task_id=?")->execute([$tid]);
+            echo json_encode(['success' => true, 'verified' => $check, 'pdo_driver' => $pdo->getAttribute(PDO::ATTR_DRIVER_NAME)], JSON_UNESCAPED_UNICODE);
+        } elseif ($op === 'call_record') {
+            // 直接调 recordTaskStart，模拟 music_generation 流程
+            $tid = $_GET['task_id'] ?? 'rec1234567890ab';
+            $params = ['model' => 'music-2.6-free', 'prompt' => 'test', 'is_instrumental' => true];
+            recordTaskStart($pdo, 'music', $tid, 'guest', $params);
+            $check = $pdo->query("SELECT task_id, user_id, status FROM music_tasks WHERE task_id='{$tid}'")->fetchAll(PDO::FETCH_ASSOC);
+            $pdo->prepare("DELETE FROM music_tasks WHERE task_id=?")->execute([$tid]);
+            echo json_encode(['success' => true, 'record_called' => true, 'verified' => $check], JSON_UNESCAPED_UNICODE);
+        } elseif ($op === 'full_flow') {
+            // 完全模拟 music_generation 入口的所有步骤
+            $tid = bin2hex(random_bytes(8));
+            $params = ['model' => 'music-2.6-free', 'prompt' => 'test full flow', 'is_instrumental' => true];
+            // Step 1: recordTaskStart
+            recordTaskStart($pdo, 'music', $tid, 'guest', $params);
+            // Step 2: 模拟 recordTaskFinish（用户立即取消/失败）
+            $result = ['error' => 'invalid_params', 'message' => 'test error'];
+            recordTaskFinish($pdo, 'music', $tid, $result, 400);
+            $check = $pdo->query("SELECT task_id, user_id, status, http_code, error_message FROM music_tasks WHERE task_id='{$tid}'")->fetchAll(PDO::FETCH_ASSOC);
+            $pdo->prepare("DELETE FROM music_tasks WHERE task_id=?")->execute([$tid]);
+            echo json_encode([
+                'success' => true,
+                'task_id' => $tid,
+                'verified_after_both' => $check,
+            ], JSON_UNESCAPED_UNICODE);
+        }
+    } catch (Throwable $e) {
+        echo json_encode([
+            'success' => false,
+            'error' => $e->getMessage(),
+            'error_class' => get_class($e),
+            'trace' => $e->getTraceAsString(),
+        ], JSON_UNESCAPED_UNICODE);
+    }
+    exit;
+}
+
+// ═══════════════════════════════════════
 // ⑧ 异步视频生成处理（与音乐生成同模式，独立任务目录）
 // ═══════════════════════════════════════
 // MiniMax 视频生成（Hailuo 2.3）耗时 60-120s，同样需绕过 PHP-FPM 30s 超时
@@ -1952,6 +2531,12 @@ if ($api_path === '/video_submit') {
         'input' => $input,
     ];
     file_put_contents("$VIDEO_TASK_DIR/$taskId.params", serialize($taskData));
+
+    // ── P2: DB 持久化（worker.sh 路径也能查到）──
+    try {
+        recordTaskStart(getMemoryDB(), 'video', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+    } catch (Throwable $e) { /* 静默失败，不影响主流程 */ }
+
     header('Content-Type: application/json');
     echo json_encode([
         'task_id' => $taskId,
@@ -2001,11 +2586,16 @@ if ($api_path === '/video_submit') {
             $output['_http_code'] = $result['http_code'];
             file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
             @unlink("$VIDEO_TASK_DIR/$taskId.params");
+            // P2: DB 持久化（视频生成完成）
+            try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $output, $result['http_code']); } catch (Throwable $e) {}
         } else {
-            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
+            $errOutput = [
                 'error' => 'proxy_all_keys_exhausted',
                 'message' => '所有 API Key 均已耗尽: ' . $last_error,
-            ]));
+            ];
+            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($errOutput));
+            // P2: DB 持久化（视频失败）
+            try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $errOutput, null); } catch (Throwable $e) {}
         }
     };
 
@@ -2336,12 +2926,17 @@ if ($api_path === '/video_process') {
         $output['_http_code'] = $result['http_code'];
         file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
         @unlink($paramFile);
+        // P2: DB 持久化（worker 路径 → video_process 完成）
+        try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $output, $result['http_code']); } catch (Throwable $e) {}
         echo json_encode(['status' => 'completed']);
     } else {
-        file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode([
+        $errOutput = [
             'error' => 'proxy_all_keys_exhausted',
             'message' => '所有 API Key 均已耗尽: ' . $last_error,
-        ]));
+        ];
+        file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($errOutput));
+        // P2: DB 持久化（worker 路径 → video_process 失败）
+        try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $errOutput, null); } catch (Throwable $e) {}
         echo json_encode(['status' => 'failed', 'error' => $last_error]);
     }
     exit;
@@ -2385,6 +2980,11 @@ if ($api_path === '/video_write_result') {
     }
     file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($resultData));
     @unlink("$VIDEO_TASK_DIR/$taskId.params");
+    // P2: DB 持久化（worker.sh 通过 video_write_result 回写）
+    try {
+        $httpCode = $resultData['_http_code'] ?? null;
+        recordTaskFinish(getMemoryDB(), 'video', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+    } catch (Throwable $e) {}
     echo json_encode(['status' => 'saved']);
     exit;
 }
@@ -2408,6 +3008,204 @@ if ($api_path === '/video_get_provider') {
         'base_url' => $provider['base_url'],
         'keys' => $provider['keys'],
     ]);
+    exit;
+}
+
+// ═══════════════════════════════════════
+// ⑧B 视频模板生成（create_video_agent_task → video_template_*）
+// ═══════════════════════════════════════
+// 与普通 video_submit 同架构：存 .params → worker 异步处理 → 写 .result
+// 复用 $VIDEO_TASK_DIR + video_tasks 表（通过 params.task_type='template' 区分）
+
+// 模板视频提交（前端入口：create_video_agent_task）
+if ($api_path === '/video_template_submit') {
+    $templateId = $input['template_id'] ?? '';
+    if (!$templateId) {
+        echo json_encode(['error' => 'missing_template_id']);
+        exit;
+    }
+    $taskId = bin2hex(random_bytes(8));
+    if (!is_dir($VIDEO_TASK_DIR)) {
+        @mkdir($VIDEO_TASK_DIR, 0755, true);
+    }
+    // 注入 task_type=template 标记，便于 stats 区分
+    $input['task_type'] = 'template';
+    $input['template_id'] = $templateId;
+    $taskData = [
+        'provider' => $provider_name,
+        'input' => $input,
+    ];
+    file_put_contents("$VIDEO_TASK_DIR/$taskId.params", serialize($taskData));
+
+    // P2: DB 持久化（复用 video_tasks 表，task_type=template）
+    try {
+        recordTaskStart(getMemoryDB(), 'video', $taskId, getAuthenticatedUserId() ?? 'guest', $input);
+    } catch (Throwable $e) { /* 静默失败 */ }
+
+    header('Content-Type: application/json');
+    echo json_encode([
+        'task_id' => $taskId,
+        'status' => 'processing',
+        'message' => '视频模板生成已提交（template_id=' . $templateId . '）',
+    ]);
+
+    // fastcgi_finish_request：PHP 后台继续跑（绕过 30s 超时）
+    $vtBgProcess = function() use ($taskId, $VIDEO_TASK_DIR, $taskData, $PROVIDERS) {
+        $taskProvConfig = $PROVIDERS[$taskData['provider']] ?? null;
+        if (!$taskProvConfig) { @unlink("$VIDEO_TASK_DIR/$taskId.params"); return; }
+        $taskBaseUrl = rtrim($taskProvConfig['base_url'], '/');
+        $vtUrl = $taskBaseUrl . '/video_template_generation';
+        $originalInput = $taskData['input'];
+        $last_error = '';
+        $result = null;
+        foreach ($taskProvConfig['keys'] as $idx => $key) {
+            if (empty($key)) continue;
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $vtUrl,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 180,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HTTPHEADER => [
+                    'Content-Type: application/json',
+                    'Authorization: Bearer ' . $key,
+                ],
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($originalInput),
+                CURLOPT_SSL_VERIFYPEER => true,
+            ]);
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+            if ($error) { $last_error = $error; continue; }
+            if ($http_code === 429) { $last_error = "Key $idx rate limited"; continue; }
+            $result = ['http_code' => $http_code, 'body' => $response];
+            break;
+        }
+        if ($result) {
+            $bodyData = json_decode($result['body'], true);
+            $output = $bodyData ?: ['raw' => $result['body']];
+            $output['_http_code'] = $result['http_code'];
+            // 模板任务可能返回 MiniMax task_id（用于后续 query），保留它
+            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($output));
+            @unlink("$VIDEO_TASK_DIR/$taskId.params");
+            // P2: 持久化完成
+            try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $output, $result['http_code']); } catch (Throwable $e) {}
+        } else {
+            $errOutput = ['error' => 'proxy_all_keys_exhausted', 'message' => '所有 API Key 均已耗尽: ' . $last_error];
+            file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($errOutput));
+            try { recordTaskFinish(getMemoryDB(), 'video', $taskId, $errOutput, null); } catch (Throwable $e) {}
+        }
+    };
+
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+        $vtBgProcess();
+    }
+    // fallback：worker.sh 接管
+    exit;
+}
+
+// 模板任务 pending（worker 拉取）
+if ($api_path === '/video_template_pending') {
+    header('Content-Type: application/json');
+    $pending = [];
+    if (is_dir($VIDEO_TASK_DIR)) {
+        // 只挑 task_type=template 的 .params 文件
+        foreach (glob("$VIDEO_TASK_DIR/*.params") as $paramFile) {
+            $id = basename($paramFile, '.params');
+            if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
+            if (file_exists("$VIDEO_TASK_DIR/$id.result")) continue;
+            $data = @unserialize(file_get_contents($paramFile));
+            if (!is_array($data) || ($data['input']['task_type'] ?? '') !== 'template') continue;
+            $age = time() - filemtime($paramFile);
+            if ($age < 1800) {
+                $pending[] = $id;
+            }
+        }
+    }
+    echo json_encode(['pending' => $pending, 'count' => count($pending)]);
+    exit;
+}
+
+// 模板任务参数读取（worker 读取）
+if ($api_path === '/video_template_read_params') {
+    header('Content-Type: application/json');
+    $taskId = $_GET['task_id'] ?? $input['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $paramFile = "$VIDEO_TASK_DIR/$taskId.params";
+    if (!file_exists($paramFile)) {
+        echo json_encode(['error' => 'task_not_found']);
+        exit;
+    }
+    $data = unserialize(file_get_contents($paramFile));
+    echo json_encode([
+        'task_id' => $taskId,
+        'params' => $data['input'] ?? [],
+        'provider' => $provider_name,
+        'api_path' => '/video_template_generation',
+    ]);
+    exit;
+}
+
+// 模板任务结果写入（worker 回写 + DB UPDATE）
+if ($api_path === '/video_template_write_result') {
+    header('Content-Type: application/json');
+    $taskId = $input['task_id'] ?? $_GET['task_id'] ?? '';
+    if (!$taskId || !preg_match('/^[a-f0-9]{16}$/', $taskId)) {
+        echo json_encode(['error' => 'invalid_task_id']);
+        exit;
+    }
+    $resultData = $input['result'] ?? [];
+    if (empty($resultData)) {
+        echo json_encode(['error' => 'missing_result']);
+        exit;
+    }
+    file_put_contents("$VIDEO_TASK_DIR/$taskId.result", json_encode($resultData));
+    @unlink("$VIDEO_TASK_DIR/$taskId.params");
+    // P2: DB UPDATE
+    try {
+        $httpCode = $resultData['_http_code'] ?? null;
+        recordTaskFinish(getMemoryDB(), 'video', $taskId, $resultData, is_int($httpCode) ? $httpCode : null);
+    } catch (Throwable $e) {}
+    echo json_encode(['status' => 'saved']);
+    exit;
+}
+
+// 模板任务统计（复用 taskStatsQuery，加 task_type=template 过滤）
+if ($api_path === '/video_template_stats') {
+    header('Content-Type: application/json');
+    try {
+        $result = taskStatsQuery(getMemoryDB(), 'video', array_merge($input, ['task_type' => 'template']));
+        $result['sub_type'] = 'video_template';
+        echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'stats_failed', 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// 模板任务 pending count（worker 健康检查用）
+if ($api_path === '/video_template_pending_count') {
+    header('Content-Type: application/json');
+    $count = 0;
+    if (is_dir($VIDEO_TASK_DIR)) {
+        foreach (glob("$VIDEO_TASK_DIR/*.params") as $paramFile) {
+            $id = basename($paramFile, '.params');
+            if (!preg_match('/^[a-f0-9]{16}$/', $id)) continue;
+            if (file_exists("$VIDEO_TASK_DIR/$id.result")) continue;
+            $data = @unserialize(file_get_contents($paramFile));
+            if (!is_array($data) || ($data['input']['task_type'] ?? '') !== 'template') continue;
+            $age = time() - filemtime($paramFile);
+            if ($age < 1800) $count++;
+        }
+    }
+    echo json_encode(['count' => $count]);
     exit;
 }
 
