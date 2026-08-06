@@ -1858,19 +1858,22 @@ if ($api_path === '/music_poll') {
         exit;
     }
     
-    // 惰性处理：如果任务还在 pending，尝试处理它
+    // 惰性处理：如果任务还在 pending，在后端继续处理
     if (file_exists($paramFile)) {
         $lockFile = "$taskDir/$taskId.lock";
         if (!file_exists($lockFile)) {
-            // 直接调用 music_process 逻辑
-            $_GET['task_id'] = $taskId;
-            // 模拟调用 /music_process
+            file_put_contents($lockFile, time());
+            // 先返回 pending（断开 nginx 连接），再后台处理
+            $canBg = function_exists('fastcgi_finish_request');
+            if ($canBg) {
+                echo json_encode(['status' => 'pending']);
+                fastcgi_finish_request();
+            }
             $taskData = unserialize(file_get_contents($paramFile));
             if ($taskData && is_array($taskData)) {
                 $taskProvider = $taskData['provider'] ?? 'minimax';
                 $originalInput = $taskData['input'] ?? [];
                 if (isset($PROVIDERS[$taskProvider])) {
-                    file_put_contents($lockFile, time());
                     $taskProvConfig = $PROVIDERS[$taskProvider];
                     $taskKeys = $taskProvConfig['keys'];
                     $taskBaseUrl = rtrim($taskProvConfig['base_url'], '/');
